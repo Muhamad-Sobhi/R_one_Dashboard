@@ -1,0 +1,66 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAdmin() {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.active == true;
+    }
+
+    match /admins/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    match /workshopSettings/{profileId} {
+      allow get: if profileId == 'main';
+      allow list: if false;
+      allow create, update: if isAdmin();
+      allow delete: if false;
+    }
+
+    match /products/{productId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /offers/{offerId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /categories/{categoryId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /brands/{brandId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /orders/{orderId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /customers/{customerId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /suppliers/{supplierId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /purchases/{purchaseId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /shippingRates/{rateId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /reviews/{reviewId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
