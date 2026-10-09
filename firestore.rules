@@ -12,6 +12,7 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    /* ---------- public store data (read-only for visitors) ---------- */
     match /workshopSettings/{profileId} {
       allow get: if profileId == 'main';
       allow list: if false;
@@ -20,21 +21,47 @@ service cloud.firestore {
     }
 
     match /products/{productId} {
-      allow read, write: if isAdmin();
+      allow read: if true;
+      allow write: if isAdmin();
     }
 
     match /offers/{offerId} {
-      allow read, write: if isAdmin();
+      allow read: if true;
+      allow write: if isAdmin();
     }
 
     match /categories/{categoryId} {
-      allow read, write: if isAdmin();
+      allow read: if true;
+      allow write: if isAdmin();
     }
 
     match /brands/{brandId} {
-      allow read, write: if isAdmin();
+      allow read: if true;
+      allow write: if isAdmin();
     }
 
+    match /shippingRates/{rateId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    /* admins always read everything; visitors only see approved/published docs */
+    match /reviews/{reviewId} {
+      allow read: if isAdmin() || resource.data.status == 'معتمدة';
+      allow write: if isAdmin();
+    }
+
+    match /blogPosts/{postId} {
+      allow read: if isAdmin() || resource.data.isPublished == true;
+      allow write: if isAdmin();
+    }
+
+    match /pages/{pageId} {
+      allow read: if isAdmin() || resource.data.isPublished == true;
+      allow write: if isAdmin();
+    }
+
+    /* ---------- collected data: admin only ---------- */
     match /orders/{orderId} {
       allow read, write: if isAdmin();
     }
@@ -51,11 +78,23 @@ service cloud.firestore {
       allow read, write: if isAdmin();
     }
 
-    match /shippingRates/{rateId} {
+    match /messages/{messageId} {
       allow read, write: if isAdmin();
     }
 
-    match /reviews/{reviewId} {
+    match /newsletter/{subscriberId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /searchLogs/{logId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /productStats/{productId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /dailyStats/{dayId} {
       allow read, write: if isAdmin();
     }
 

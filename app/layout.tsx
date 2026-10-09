@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'R/ONE | إدارة الورشة',
-  description: 'لوحة إدارة ورشة R/ONE لتصنيع الملابس الشبابية',
+  title: 'R/ONE | لوحة الإدارة',
+  description: 'لوحة إدارة متجر R/ONE: المنتجات والطلبات والعملاء ووسائل التواصل.',
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

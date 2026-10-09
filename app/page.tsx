@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
   Activity,
@@ -7,10 +8,12 @@ import {
   ArchiveRestore,
   ArrowLeft,
   ArrowUpLeft,
+  BookOpen,
   Bell,
   BellRing,
   Building2,
   Boxes,
+  ChartNoAxesColumn,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -19,10 +22,13 @@ import {
   CircleHelp,
   ClipboardList,
   CreditCard,
+  FileText,
   Ellipsis,
+  Eye,
   ImagePlus,
   LoaderCircle,
   Mail,
+  MessageSquare,
   LayoutDashboard,
   LogOut,
   Phone,
@@ -47,49 +53,68 @@ import {
   X,
 } from 'lucide-react';
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from 'firebase/auth';
-import { addDoc, collection, deleteDoc, doc, getDoc, increment, onSnapshot, serverTimestamp, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, getDoc, increment, limit as fbLimit, onSnapshot, orderBy, query as fsQuery, serverTimestamp, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 import { defaultWorkshopProfile, normalizePublicUrl, type WorkshopProfile } from './workshop-profile';
 import { WorkshopSettingsForm } from './workshop-settings-form';
+import { AnalyticsPanel, BlogPanel, MessagesPanel, NewsletterPanel, PagesPanel } from './insights';
 
-type Page = 'overview' | 'products' | 'brands' | 'categories' | 'offers' | 'orders' | 'suppliers' | 'customers' | 'reviews' | 'notifications' | 'shippingRates' | 'workshopSettings';
+type Page = 'overview' | 'analytics' | 'products' | 'brands' | 'categories' | 'offers' | 'orders' | 'suppliers' | 'customers' | 'reviews' | 'messages' | 'newsletter' | 'blog' | 'pages' | 'notifications' | 'shippingRates' | 'workshopSettings';
 type CatalogKind = 'brands' | 'categories';
 type OrderStatus = 'جديد' | 'قيد التجهيز' | 'تم الشحن' | 'مكتمل' | 'ملغي';
 type ProductImage = { url: string; publicId: string };
-type Product = { id: string; name: string; sku: string; category: string; categoryId?: string; brand: string; brandId?: string; price: number; salePrice?: number; offerTitle?: string; images?: ProductImage[]; imageUrl?: string; imagePublicId?: string; stock: number };
+type ProductSize = { name: string; stock?: number };
+type ProductColor = { name: string; hex?: string; imageUrl?: string; publicId?: string; stock?: number };
+type Product = { id: string; name: string; sku: string; category: string; categoryId?: string; brand: string; brandId?: string; description?: string; price: number; salePrice?: number; offerTitle?: string; images?: ProductImage[]; imageUrl?: string; imagePublicId?: string; stock: number; sizes?: ProductSize[]; colors?: ProductColor[] };
 type CatalogEntry = { id: string; name: string; description?: string; isActive: boolean; createdAt?: { seconds: number } };
-type Order = { id: string; customerName: string; customerPhone?: string; itemsCount: number; total: number; status: OrderStatus; createdAt?: { seconds: number } };
+type OrderItem = { productId?: string; productName?: string; sku?: string; imageUrl?: string; quantity?: number; unitPrice?: number; lineTotal?: number };
+type Order = { id: string; customerName: string; customerPhone?: string; customerEmail?: string; itemsCount: number; items?: OrderItem[]; subtotal?: number; shippingArea?: string; shippingCost?: number | null; shippingPending?: boolean; city?: string; address?: string; total: number; status: OrderStatus; createdAt?: { seconds: number } };
 type Customer = { id: string; name: string; email?: string; phone?: string; ordersCount?: number; totalSpent?: number; createdAt?: { seconds: number } };
 type Supplier = { id: string; name: string; contactName?: string; phone?: string; email?: string; address?: string; notes?: string; isActive: boolean; createdAt?: { seconds: number } };
 type PurchaseLine = { productId: string; productName: string; quantity: number; unitCost: number };
 type Purchase = { id: string; supplierId: string; supplierName: string; items: PurchaseLine[]; total: number; status: 'مستلمة' | 'ملغاة'; createdAt?: { seconds: number } };
 type ShippingRate = { id: string; area: string; price: number; deliveryDays: number; isActive: boolean };
+type Message = { id: string; name: string; phone?: string; email?: string; message: string; status?: string; createdAt?: { seconds: number } };
+type Subscriber = { id: string; email: string; source?: string; createdAt?: { seconds: number } };
+type SearchLog = { id: string; term: string; results: number; createdAt?: { seconds: number } };
+type ProductStat = { id: string; productId?: string; productName?: string; views?: number; carts?: number; lastViewedAt?: { seconds: number } };
+type DailyStat = { id: string; date: string; views?: number; searches?: number; messages?: number; addToCarts?: number; checkoutStarts?: number; whatsappClicks?: number };
+type BlogPost = { id: string; title: string; slug?: string; excerpt?: string; content?: string; coverImage?: string; author?: string; readMinutes?: number; tags?: string[]; isPublished?: boolean; publishedAt?: { seconds: number } };
+type InfoPage = { id: string; title: string; slug?: string; content?: string; group?: string; isPublished?: boolean; updatedAt?: { seconds: number } };
 type Review = { id: string; customerName: string; productName: string; rating: number; comment: string; status: 'جديدة' | 'معتمدة' | 'مخفية'; createdAt?: { seconds: number } };
 type Offer = { id: string; title: string; description?: string; discountType: 'percentage' | 'fixed'; discountValue: number; productIds: string[]; startsOn: string; endsOn: string; isActive: boolean; createdAt?: { seconds: number } };
 type GlobalSearchResult = { id: string; title: string; detail: string; type: string; page: Page; query: string };
 
 const money = new Intl.NumberFormat('ar-EG', { style: 'currency', currency: 'EGP', maximumFractionDigits: 0 });
 const statusOptions: OrderStatus[] = ['جديد', 'قيد التجهيز', 'تم الشحن', 'مكتمل', 'ملغي'];
+const alphaSizePresets = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'XXXXL'];
+const numericSizePresets = ['30', '32', '34', '36', '38', '40', '42', '44'];
 const navGroups: { title: string; items: { id: Page; label: string; icon: typeof LayoutDashboard }[] }[] = [
-  { title: 'نظرة عامة', items: [{ id: 'overview', label: 'لوحة المتابعة', icon: LayoutDashboard }] },
+  { title: 'نظرة عامة', items: [{ id: 'overview', label: 'لوحة المتابعة', icon: LayoutDashboard }, { id: 'analytics', label: 'التحليلات', icon: ChartNoAxesColumn }] },
   { title: 'الكتالوج', items: [{ id: 'products', label: 'المنتجات', icon: Shirt }, { id: 'brands', label: 'العلامات التجارية', icon: Tags }, { id: 'categories', label: 'التصنيفات', icon: Boxes }, { id: 'offers', label: 'العروض', icon: Sparkles }] },
   { title: 'العمليات', items: [{ id: 'orders', label: 'الطلبات', icon: ShoppingBag }, { id: 'suppliers', label: 'الموردون', icon: Truck }] },
-  { title: 'العملاء والتفاعل', items: [{ id: 'customers', label: 'العملاء', icon: UsersRound }, { id: 'reviews', label: 'التقييمات', icon: Star }, { id: 'notifications', label: 'التنبيهات', icon: BellRing }] },
-  { title: 'الإعدادات', items: [{ id: 'workshopSettings', label: 'معلومات الورشة', icon: Building2 }, { id: 'shippingRates', label: 'أسعار الشحن', icon: MapPin }] },
+  { title: 'العملاء والتفاعل', items: [{ id: 'customers', label: 'العملاء', icon: UsersRound }, { id: 'reviews', label: 'التقييمات', icon: Star }, { id: 'messages', label: 'الرسائل', icon: MessageSquare }, { id: 'newsletter', label: 'النشرة', icon: Mail }, { id: 'notifications', label: 'التنبيهات', icon: BellRing }] },
+  { title: 'المحتوى', items: [{ id: 'blog', label: 'المدونة', icon: BookOpen }, { id: 'pages', label: 'الصفحات', icon: FileText }] },
+  { title: 'الإعدادات', items: [{ id: 'workshopSettings', label: 'بيانات العلامة', icon: Building2 }, { id: 'shippingRates', label: 'أسعار الشحن', icon: MapPin }] },
 ];
 const pageCopy: Record<Page, { title: string; eyebrow: string; description: string }> = {
-  overview: { title: 'صباح الشغل', eyebrow: 'نظرة عامة', description: 'دي لقطة سريعة على اللي بيحصل في الورشة.' },
+  overview: { title: 'صباح الشغل', eyebrow: 'نظرة عامة', description: 'دي لقطة سريعة على كل شغلك النهارده.' },
+  analytics: { title: 'التحليلات', eyebrow: 'الأرقام', description: 'أرقام المبيعات والبحث والمشاهدات اللي بتوجّه قراراتك.' },
+  messages: { title: 'الرسائل', eyebrow: 'العملاء والتفاعل', description: 'رسائل العملاء اللي جاية من صفحة التواصل.' },
+  newsletter: { title: 'النشرة الإخبارية', eyebrow: 'العملاء والتفاعل', description: 'الإيميلات المسجلة من الموقع.' },
+  blog: { title: 'المدونة', eyebrow: 'المحتوى', description: 'مقالات بتظهر في صفحة المدونة على الموقع.' },
+  pages: { title: 'الصفحات', eyebrow: 'المحتوى', description: 'صفحات الموقع الثابتة (الشحن، الاسترجاع، الشروط).' },
   products: { title: 'المنتجات', eyebrow: 'الكتالوج', description: 'تابع القطع والمقاسات والمخزون في مكان واحد.' },
   brands: { title: 'العلامات التجارية', eyebrow: 'الكتالوج', description: 'العلامات المسجلة على المنتجات الحالية.' },
-  categories: { title: 'التصنيفات', eyebrow: 'الكتالوج', description: 'توزيع منتجات الورشة حسب نوع القطعة.' },
+  categories: { title: 'التصنيفات', eyebrow: 'الكتالوج', description: 'توزيع المنتجات حسب نوع القطعة.' },
   offers: { title: 'العروض والخصومات', eyebrow: 'الكتالوج', description: 'أنشئ حملات خصم وحدد القطع والمدة وتابع الأسعار الترويجية.' },
   orders: { title: 'الطلبات', eyebrow: 'العمليات', description: 'من أول تأكيد الطلب لحد ما يوصل للعميل.' },
   suppliers: { title: 'الموردون', eyebrow: 'العمليات', description: 'بيانات التواصل وحالة التعامل مع كل مورد.' },
   customers: { title: 'العملاء', eyebrow: 'العلاقات', description: 'العملاء المسجلون وسجل تعاملاتهم.' },
   reviews: { title: 'التقييمات', eyebrow: 'العملاء والتفاعل', description: 'راجع آراء العملاء وحدد ما يظهر منها.' },
-  notifications: { title: 'التنبيهات', eyebrow: 'العملاء والتفاعل', description: 'الأمور التي تحتاج متابعة في الورشة.' },
+  notifications: { title: 'التنبيهات', eyebrow: 'العملاء والتفاعل', description: 'الأمور اللي محتاجة متابعة منك.' },
   shippingRates: { title: 'أسعار الشحن', eyebrow: 'الإعدادات', description: 'إدارة المناطق وتكلفة ومدة التوصيل.' },
-  workshopSettings: { title: 'معلومات الورشة', eyebrow: 'الإعدادات', description: 'بيانات التواصل والموقع التي تظهر لزوار الموقع.' },
+  workshopSettings: { title: 'بيانات العلامة', eyebrow: 'الإعدادات', description: 'بيانات التواصل ووسائل التواصل الاجتماعي التي تظهر لزوار الموقع.' },
 };
 
 function getErrorMessage(error: unknown) {
@@ -146,6 +171,12 @@ async function uploadProductImages(files: File[]): Promise<ProductImage[]> {
   }));
 }
 
+function BrandLogo({ size = 30, ghost = false }: { size?: number; ghost?: boolean }) {
+  return <span className={`dash-logo${ghost ? ' dash-logo-ghost' : ''}`} style={{ '--dash-logo-size': `${size}px` } as React.CSSProperties}>
+    <Image src="/logo.png" alt="R/ONE" width={size} height={size} className="dash-logo-img" draggable={false} />
+  </span>;
+}
+
 function initials(value: string) {
   return value.trim().split(/\s+/).slice(0, 2).map((part) => part[0] || '').join('');
 }
@@ -179,8 +210,8 @@ function Login({ message }: { message?: string }) {
     finally { setBusy(false); }
   }
   return <main className="login-shell">
-    <section className="login-aside"><div className="login-wordmark"><span>R/</span>ONE</div><div className="login-slogan"><span className="eyebrow">MADE TO MOVE</span><h2>كل قطعة<br />لها حكاية.</h2><div className="stitch-line" /></div><div className="login-caption">ورشة R/ONE · القاهرة</div></section>
-    <section className="login-form-wrap"><div className="mobile-wordmark"><span>R/</span>ONE <small>WORKSHOP</small></div><div className="login-form-inner"><span className="eyebrow">مساحة الفريق</span><h1>أهلاً بعودتك</h1><p className="muted">سجّل الدخول لمتابعة شغل الورشة اليوم.</p><form className="login-form" onSubmit={submit}><label>البريد الإلكتروني<input type="email" autoComplete="username" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@r-one.com" /></label><label>كلمة المرور<input type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} placeholder="••••••••••" /></label>{(error || message) && <p className="form-error">{error || message}</p>}<button className="button button-dark button-full" type="submit" disabled={busy}>{busy ? 'جارٍ تسجيل الدخول...' : <>دخول إلى لوحة الإدارة <ArrowLeft size={17} /></>}</button></form><p className="login-security"><span className="secure-dot" /> دخول آمن عبر Firebase Authentication</p></div><div className="login-foot">R/ONE WORKSHOP <span>الإدارة الداخلية</span></div></section>
+    <section className="login-aside"><div className="login-wordmark"><BrandLogo size={34} ghost /><span>ONE</span></div><div className="login-slogan"><span className="eyebrow">MADE TO MOVE</span><h2>كل قطعة<br />لها حكاية.</h2><div className="stitch-line" /></div><div className="login-caption">R/ONE · القاهرة</div></section>
+    <section className="login-form-wrap"><div className="mobile-wordmark"><BrandLogo size={30} /><span>ONE</span></div><div className="login-form-inner"><span className="eyebrow">مساحة الفريق</span><h1>أهلاً بعودتك</h1><p className="muted">سجّل الدخول لمتابعة شغلك النهارده.</p><form className="login-form" onSubmit={submit}><label>البريد الإلكتروني<input type="email" autoComplete="username" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@r-one.com" /></label><label>كلمة المرور<input type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} placeholder="••••••••••" /></label>{(error || message) && <p className="form-error">{error || message}</p>}<button className="button button-dark button-full" type="submit" disabled={busy}>{busy ? 'جارٍ تسجيل الدخول...' : <>دخول إلى لوحة الإدارة <ArrowLeft size={17} /></>}</button></form><p className="login-security"><span className="secure-dot" /> دخول آمن عبر Firebase Authentication</p></div><div className="login-foot">R/ONE <span>الإدارة الداخلية</span></div></section>
   </main>;
 }
 
@@ -273,7 +304,7 @@ function ConfirmDialog({ confirmation, onClose }: { confirmation: Confirmation; 
 
 function GlobalSearchDialog({ query, onQueryChange, results, onSelect, onClose }: { query: string; onQueryChange: (value: string) => void; results: GlobalSearchResult[]; onSelect: (result: GlobalSearchResult) => void; onClose: () => void }) {
   const dialogRef = useModalAccessibility(onClose);
-  return <div className="modal-backdrop search-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section ref={dialogRef} tabIndex={-1} className="global-search-dialog" role="dialog" aria-modal="true" aria-labelledby="global-search-title"><div className="global-search-input-row"><Search size={19} /><input id="global-search-title" autoFocus value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="ابحث في المنتجات والطلبات والعملاء..." /><kbd>ESC</kbd><button className="icon-button" title="إغلاق البحث" onClick={onClose}><X size={17} /></button></div><div className="global-search-results">{query.trim().length < 2 ? <div className="global-search-hint"><span className="eyebrow">بحث شامل</span><p>اكتب حرفين على الأقل للبحث في كامل بيانات الورشة.</p><small>منتجات · تصنيفات · علامات · طلبات · عملاء · موردون · عروض</small></div> : results.length ? results.map((result) => <button className="global-search-result" type="button" key={`${result.type}:${result.id}`} onClick={() => onSelect(result)}><span className="global-search-result-icon"><Search size={15} /></span><span className="global-search-result-copy"><strong>{result.title}</strong><small>{result.detail}</small></span><span className="global-search-result-type">{result.type}</span></button>) : <div className="global-search-hint"><strong>مفيش نتائج مطابقة</strong><p>جرّب كلمة بحث أقصر أو رقم الطلب أو كود المنتج.</p></div>}</div><div className="global-search-footer"><span>تنقل مباشر إلى السجل</span><span><kbd>Ctrl</kbd> <kbd>K</kbd> لفتح البحث</span></div></section></div>;
+  return <div className="modal-backdrop search-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section ref={dialogRef} tabIndex={-1} className="global-search-dialog" role="dialog" aria-modal="true" aria-labelledby="global-search-title"><div className="global-search-input-row"><Search size={19} /><input id="global-search-title" autoFocus value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="ابحث في المنتجات والطلبات والعملاء..." /><kbd>ESC</kbd><button className="icon-button" title="إغلاق البحث" onClick={onClose}><X size={17} /></button></div><div className="global-search-results">{query.trim().length < 2 ? <div className="global-search-hint"><span className="eyebrow">بحث شامل</span><p>اكتب حرفين على الأقل للبحث في كامل بيانات المتجر.</p><small>منتجات · تصنيفات · علامات · طلبات · عملاء · موردون · عروض</small></div> : results.length ? results.map((result) => <button className="global-search-result" type="button" key={`${result.type}:${result.id}`} onClick={() => onSelect(result)}><span className="global-search-result-icon"><Search size={15} /></span><span className="global-search-result-copy"><strong>{result.title}</strong><small>{result.detail}</small></span><span className="global-search-result-type">{result.type}</span></button>) : <div className="global-search-hint"><strong>مفيش نتائج مطابقة</strong><p>جرّب كلمة بحث أقصر أو رقم الطلب أو كود المنتج.</p></div>}</div><div className="global-search-footer"><span>تنقل مباشر إلى السجل</span><span><kbd>Ctrl</kbd> <kbd>K</kbd> لفتح البحث</span></div></section></div>;
 }
 
 function CatalogModal({ kind, entry, onClose, onSave }: { kind: CatalogKind; entry?: CatalogEntry; onClose: () => void; onSave: (value: Omit<CatalogEntry, 'id'>, id?: string) => Promise<void> }) {
@@ -308,7 +339,7 @@ function CatalogTable({ kind, entries, products, query, onEdit, onToggle, onDele
     ? product.categoryId === entry.id || (!product.categoryId && normalizeLabel(product.category || '') === normalizeLabel(entry.name))
     : product.brandId === entry.id || (!product.brandId && normalizeLabel(product.brand || '') === normalizeLabel(entry.name));
   const filtered = entries.filter((entry) => !query || [entry.name, entry.description || ''].some((value) => normalizeLabel(value).includes(normalizeLabel(query))));
-  if (!filtered.length) return <EmptyState icon={categoryMode ? Boxes : Tags} title={query ? 'مفيش نتائج مطابقة' : categoryMode ? 'لسه مفيش تصنيفات' : 'لسه مفيش علامات تجارية'} body={query ? 'جرّب كلمة بحث تانية.' : categoryMode ? 'أضف تصنيفات واضحة علشان الفريق يلاقي المنتجات بسرعة.' : 'سجّل العلامات التجارية المستخدمة في منتجات الورشة.'} />;
+  if (!filtered.length) return <EmptyState icon={categoryMode ? Boxes : Tags} title={query ? 'مفيش نتائج مطابقة' : categoryMode ? 'لسه مفيش تصنيفات' : 'لسه مفيش علامات تجارية'} body={query ? 'جرّب كلمة بحث تانية.' : categoryMode ? 'أضف تصنيفات واضحة علشان الفريق يلاقي المنتجات بسرعة.' : 'سجّل العلامات التجارية المستخدمة في المنتجات الحالية.'} />;
 
   return <div className="table-scroll"><table className="catalog-table"><thead><tr><th>{categoryMode ? 'التصنيف' : 'العلامة التجارية'}</th><th>الوصف</th><th>المنتجات</th><th>الحالة</th><th><span className="sr-only">إجراءات</span></th></tr></thead><tbody>{filtered.map((entry) => {
     const usage = products.filter((product) => matches(product, entry)).length;
@@ -384,7 +415,7 @@ function RecordModal({ title, fields, initial, onClose, onSave }: { title: strin
     catch (reason) { setError(reason instanceof Error ? reason.message : getErrorMessage(reason)); }
     finally { setBusy(false); }
   }
-  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section ref={dialogRef} tabIndex={-1} className="modal" role="dialog" aria-modal="true" aria-labelledby="record-modal-title"><div className="modal-head"><div><span className="eyebrow">إدارة الورشة</span><h2 id="record-modal-title">{title}</h2></div><button className="icon-button" title="إغلاق" onClick={onClose}><X size={19} /></button></div><form onSubmit={submit}><div className="form-grid">{fields.map((field) => <label className={field.type === 'textarea' ? 'span-two' : ''} key={field.key}>{field.label}{field.type === 'textarea' ? <textarea rows={3} maxLength={400} value={values[field.key]} onChange={(event) => setValues((state) => ({ ...state, [field.key]: event.target.value }))} placeholder={field.placeholder} /> : <input type={field.type || 'text'} required={field.required} min={field.min} maxLength={field.type === 'number' ? undefined : 120} value={values[field.key]} onChange={(event) => setValues((state) => ({ ...state, [field.key]: event.target.value }))} placeholder={field.placeholder} />}</label>)}</div>{error && <p className="form-error" role="alert">{error}</p>}<div className="modal-actions"><button className="button button-quiet" type="button" onClick={onClose}>إلغاء</button><button className="button button-dark" type="submit" disabled={busy}>{busy ? <><LoaderCircle className="spin-icon" size={15} /> جارٍ الحفظ...</> : <><Check size={16} /> حفظ</>}</button></div></form></section></div>;
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section ref={dialogRef} tabIndex={-1} className="modal" role="dialog" aria-modal="true" aria-labelledby="record-modal-title"><div className="modal-head"><div><span className="eyebrow">إدارة البيانات</span><h2 id="record-modal-title">{title}</h2></div><button className="icon-button" title="إغلاق" onClick={onClose}><X size={19} /></button></div><form onSubmit={submit}><div className="form-grid">{fields.map((field) => <label className={field.type === 'textarea' ? 'span-two' : ''} key={field.key}>{field.label}{field.type === 'textarea' ? <textarea rows={3} maxLength={400} value={values[field.key]} onChange={(event) => setValues((state) => ({ ...state, [field.key]: event.target.value }))} placeholder={field.placeholder} /> : <input type={field.type || 'text'} required={field.required} min={field.min} maxLength={field.type === 'number' ? undefined : 120} value={values[field.key]} onChange={(event) => setValues((state) => ({ ...state, [field.key]: event.target.value }))} placeholder={field.placeholder} />}</label>)}</div>{error && <p className="form-error" role="alert">{error}</p>}<div className="modal-actions"><button className="button button-quiet" type="button" onClick={onClose}>إلغاء</button><button className="button button-dark" type="submit" disabled={busy}>{busy ? <><LoaderCircle className="spin-icon" size={15} /> جارٍ الحفظ...</> : <><Check size={16} /> حفظ</>}</button></div></form></section></div>;
 }
 
 function PurchaseModal({ products, suppliers, onClose, onSave }: { products: Product[]; suppliers: Supplier[]; onClose: () => void; onSave: (supplierId: string, lines: PurchaseLine[]) => Promise<void> }) {
@@ -419,7 +450,29 @@ function ProductModal({ product, categories, brands, onClose, onManage, onSave }
   const previewUrls = useRef<string[]>([]);
   const categoryMatch = categories.find((entry) => entry.id === product?.categoryId || normalizeLabel(entry.name) === normalizeLabel(product?.category || ''));
   const brandMatch = brands.find((entry) => entry.id === product?.brandId || normalizeLabel(entry.name) === normalizeLabel(product?.brand || ''));
-  const [form, setForm] = useState({ name: product?.name || '', sku: product?.sku || '', categoryId: product?.categoryId || categoryMatch?.id || '', brandId: product?.brandId || brandMatch?.id || '', category: product?.category || '', brand: product?.brand || '', price: product?.price?.toString() || '', stock: product?.stock?.toString() || '' });
+  const [form, setForm] = useState({ name: product?.name || '', sku: product?.sku || '', categoryId: product?.categoryId || categoryMatch?.id || '', brandId: product?.brandId || brandMatch?.id || '', category: product?.category || '', brand: product?.brand || '', description: product?.description || '', price: product?.price?.toString() || '', stock: product?.stock?.toString() || '' });
+  const [sizes, setSizes] = useState<ProductSize[]>(() => (product?.sizes ?? []).filter(Boolean).map((size) => ({ ...size })));
+  const [colors, setColors] = useState<ProductColor[]>(() => (product?.colors ?? []).filter(Boolean).map((color) => ({ ...color })));
+  const [sizeInput, setSizeInput] = useState('');
+  const [colorDraft, setColorDraft] = useState<{ name: string; hex: string; imageUrl: string }>({ name: '', hex: '#E46A29', imageUrl: '' });
+
+  function addSize(value: string) {
+    const name = value.trim();
+    if (!name) return;
+    if (sizes.some((size) => size.name.toLowerCase() === name.toLowerCase())) { setSizeInput(''); return; }
+    setSizes((current) => [...current, { name }]);
+    setSizeInput('');
+  }
+
+  function addColor() {
+    const name = colorDraft.name.trim();
+    if (!name) { setError('اكتب اسم اللون الأول.'); return; }
+    if (colors.some((color) => color.name.toLowerCase() === name.toLowerCase())) { setError('اللون ده مضاف بالفعل.'); return; }
+    const match = images.find((image) => image.url === colorDraft.imageUrl);
+    setColors((current) => [...current, { name, hex: colorDraft.hex, imageUrl: colorDraft.imageUrl, publicId: match?.publicId || '' }]);
+    setColorDraft({ name: '', hex: '#E46A29', imageUrl: '' });
+    setError('');
+  }
   const setField = (field: keyof typeof form, value: string) => setForm((current) => ({ ...current, [field]: value }));
   useEffect(() => () => previewUrls.current.forEach((url) => URL.revokeObjectURL(url)), []);
 
@@ -466,7 +519,21 @@ function ProductModal({ product, categories, brands, onClose, onManage, onSave }
       let uploadedIndex = 0;
       const savedImages = images.map((image) => image.file ? uploadedImages[uploadedIndex++] : { url: image.url, publicId: image.publicId });
       const primaryImage = savedImages[0];
-      await onSave({ name: form.name.trim(), sku: form.sku.trim().toUpperCase(), category: category?.name || form.category, categoryId: category?.id, brand: brand?.name || form.brand, brandId: brand?.id, price, stock: Number(form.stock), images: savedImages, imageUrl: primaryImage?.url || '', imagePublicId: primaryImage?.publicId || '' }, product?.id);
+      const sizePayload = sizes
+        .filter((size) => size.name.trim())
+        .map((size) => (Number.isFinite(Number(size.stock)) && size.stock !== undefined ? { name: size.name.trim(), stock: Number(size.stock) } : { name: size.name.trim() }));
+      const colorPayload = colors
+        .filter((color) => color.name.trim())
+        .map((color) => {
+          const match = savedImages.find((image) => image.url === color.imageUrl);
+          return {
+            name: color.name.trim(),
+            ...(color.hex ? { hex: color.hex } : {}),
+            ...(color.imageUrl ? { imageUrl: color.imageUrl, publicId: match?.publicId || '' } : {}),
+            ...(Number.isFinite(Number(color.stock)) && color.stock !== undefined ? { stock: Number(color.stock) } : {}),
+          };
+        });
+      await onSave({ name: form.name.trim(), sku: form.sku.trim().toUpperCase(), description: form.description.trim(), category: category?.name || form.category, categoryId: category?.id, brand: brand?.name || form.brand, brandId: brand?.id, price, stock: Number(form.stock), sizes: sizePayload, colors: colorPayload, images: savedImages, imageUrl: primaryImage?.url || '', imagePublicId: primaryImage?.publicId || '' }, product?.id);
       onClose();
     } catch (reason) { setError(reason instanceof Error ? reason.message : getErrorMessage(reason)); }
     finally { setBusy(false); }
@@ -490,6 +557,88 @@ function ProductModal({ product, categories, brands, onClose, onManage, onSave }
           <label>العلامة التجارية<select required value={form.brandId} onChange={(event) => setField('brandId', event.target.value)}><option value="">اختر علامة تجارية</option>{brands.filter((entry) => entry.isActive || entry.id === form.brandId).map((entry) => <option key={entry.id} value={entry.id}>{entry.name}{entry.isActive ? '' : ' · مؤرشفة'}</option>)}</select>{!brands.some((entry) => entry.isActive) && <button className="field-action" type="button" onClick={() => onManage('brands')}>أضف علامة تجارية أولاً</button>}</label>
           <label>السعر الأساسي بالجنيه<input type="number" required min="0" step="1" value={form.price} onChange={(event) => setField('price', event.target.value)} placeholder="850" /></label>
           <label>الكمية في المخزون<input type="number" required min="0" step="1" value={form.stock} onChange={(event) => setField('stock', event.target.value)} placeholder="24" /></label>
+          <label className="span-two">وصف المنتج<textarea rows={4} maxLength={1200} value={form.description} onChange={(event) => setField('description', event.target.value)} placeholder="خامة القطعة، المقاسات المتاحة، تعليمات العناية، أو أي تفاصيل تساعد العميل." /></label>
+        </div>
+
+        <div className="variant-editor">
+          <div className="variant-editor-head">
+            <div><strong>المقاسات</strong><small>تظهر للعميل كاختيار إلزامي قبل الإضافة للشنطة</small></div>
+            <span className="variant-count">{sizes.length} مقاس</span>
+          </div>
+          <div className="variant-chips">
+            {sizes.map((size, index) => (
+              <span className="variant-chip" key={`${size.name}-${index}`}>
+                <input
+                  className="variant-chip-name"
+                  value={size.name}
+                  onChange={(event) => setSizes((current) => current.map((entry, position) => (position === index ? { ...entry, name: event.target.value } : entry)))}
+                />
+                <input
+                  className="variant-chip-stock"
+                  type="number"
+                  min="0"
+                  step="1"
+                  placeholder="الكمية"
+                  value={size.stock ?? ''}
+                  onChange={(event) => setSizes((current) => current.map((entry, position) => (position === index ? { ...entry, stock: event.target.value === '' ? undefined : Number(event.target.value) } : entry)))}
+                />
+                <button className="icon-button" type="button" title="حذف المقاس" onClick={() => setSizes((current) => current.filter((_, position) => position !== index))}><X size={14} /></button>
+              </span>
+            ))}
+            {!sizes.length ? <small className="variant-empty">مفيش مقاسات — سيب الخانة فاضية لو القطعة بمقاس واحد.</small> : null}
+          </div>
+          <div className="variant-presets">
+            <span>مقاسات جاهزة</span>
+            {[...alphaSizePresets, ...numericSizePresets].map((preset) => {
+              const added = sizes.some((size) => size.name.toLowerCase() === preset.toLowerCase());
+              return (
+                <button
+                  className={`preset-chip ${added ? 'preset-chip-added' : ''}`}
+                  key={preset}
+                  type="button"
+                  disabled={added}
+                  onClick={() => addSize(preset)}
+                  title={added ? `${preset} مضاف بالفعل` : `إضافة ${preset}`}
+                >
+                  {added ? <Check size={12} /> : <Plus size={12} />} {preset}
+                </button>
+              );
+            })}
+          </div>
+          <div className="variant-add">
+            <input value={sizeInput} onChange={(event) => setSizeInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addSize(sizeInput); } }} placeholder="أو اكتب مقاس مخصص: 3XL أو 38" maxLength={12} />
+            <button className="button button-quiet" type="button" onClick={() => addSize(sizeInput)}><Plus size={14} /> إضافة مقاس</button>
+          </div>
+        </div>
+
+        <div className="variant-editor">
+          <div className="variant-editor-head">
+            <div><strong>الألوان</strong><small>كل لون بياخد صورته — الصورة بتتغير في صفحة المنتج لما العميل يختار اللون</small></div>
+            <span className="variant-count">{colors.length} لون</span>
+          </div>
+          <ul className="color-editor-list">
+            {colors.map((color, index) => (
+              <li className="color-editor-row" key={`${color.name}-${index}`}>
+                <input type="color" value={color.hex || '#E46A29'} onChange={(event) => setColors((current) => current.map((entry, position) => (position === index ? { ...entry, hex: event.target.value } : entry)))} aria-label="لون العينات" />
+                <input value={color.name} placeholder="اسم اللون" maxLength={24} onChange={(event) => setColors((current) => current.map((entry, position) => (position === index ? { ...entry, name: event.target.value } : entry)))} />
+                <select value={color.imageUrl || ''} onChange={(event) => setColors((current) => current.map((entry, position) => (position === index ? { ...entry, imageUrl: event.target.value } : entry)))}>
+                  <option value="">بدون صورة خاصة</option>
+                  {images.map((image, imageIndex) => <option key={`${image.url}-${imageIndex}`} value={image.url}>صورة {imageIndex + 1}</option>)}
+                </select>
+                <button className="icon-button delete-action" type="button" title="حذف اللون" onClick={() => setColors((current) => current.filter((_, position) => position !== index))}><X size={14} /></button>
+              </li>
+            ))}
+            {!colors.length ? <small className="variant-empty">مفيش ألوان — أضف لون واختارله الصورة المناسبة من صور المنتج.</small> : null}
+          </ul>
+          <div className="color-editor-add">
+            <input type="color" value={colorDraft.hex} onChange={(event) => setColorDraft((current) => ({ ...current, hex: event.target.value }))} aria-label="اختيار اللون" />
+            <input value={colorDraft.name} onChange={(event) => setColorDraft((current) => ({ ...current, name: event.target.value }))} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addColor(); } }} placeholder="اسم اللون" maxLength={24} />
+            <select value={colorDraft.imageUrl} onChange={(event) => setColorDraft((current) => ({ ...current, imageUrl: event.target.value }))}>
+              <option value="">بدون صورة خاصة</option>
+              {images.map((image, index) => <option key={`${image.url}-${index}`} value={image.url}>صورة {index + 1}</option>)}
+            </select>
+            <button className="button button-quiet" type="button" onClick={addColor}><Plus size={14} /> إضافة لون</button>
+          </div>
         </div>
         {error && <p className="form-error" role="alert">{error}</p>}
         <div className="modal-actions"><button className="button button-quiet" type="button" onClick={onClose}>إلغاء</button><button className="button button-dark" type="submit" disabled={busy}>{busy ? <><LoaderCircle className="spin-icon" size={15} /> جارٍ رفع الصورة والحفظ...</> : <><Check size={16} /> {product ? 'حفظ التعديلات' : 'إضافة المنتج'}</>}</button></div>
@@ -503,9 +652,186 @@ function StatusBadge({ status }: { status: string }) {
   return <span className={`status-badge status-${style}`}><i />{status || 'جديد'}</span>;
 }
 
-function ProductTable({ products, onEdit, onDelete, mode }: { products: Product[]; onEdit: (product: Product) => void; onDelete: (product: Product) => void; mode: Page }) {
-  if (!products.length) return <EmptyState icon={mode === 'offers' ? Sparkles : Package} title={mode === 'offers' ? 'مفيش عروض مسجلة حالياً' : 'الكتالوج لسه فاضي'} body={mode === 'offers' ? 'أضف سعر عرض لمنتجاتك لعرضها هنا.' : 'أضف أول منتج للورشة وابدأ تنظيم المخزون.'} />;
-  return <div className="table-scroll"><table><thead><tr><th>المنتج</th><th>التصنيف</th><th>السعر</th><th>المخزون</th><th>الحالة</th><th><span className="sr-only">الإجراءات</span></th></tr></thead><tbody>{products.map((product, index) => { const coverImage = product.images?.[0]?.url || product.imageUrl; return <tr key={product.id}><td><div className="product-cell">{coverImage ? <img className="product-swatch product-thumbnail" src={coverImage} alt={product.name} loading="lazy" /> : <span className={`product-swatch swatch-${index % 5}`}><Shirt size={19} strokeWidth={1.6} /></span>}<span className="product-name"><strong>{product.name}</strong><small>{product.sku} · {product.brand}</small></span></div></td><td><span className="table-label">{product.category || '—'}</span></td><td className="price-cell">{product.salePrice ? <span className="sale-price">{money.format(product.salePrice)} <del>{money.format(product.price)}</del></span> : money.format(Number(product.price) || 0)}</td><td><span className={`stock-quantity ${Number(product.stock) <= 5 ? 'stock-low' : ''}`}>{product.stock ?? 0} <small>قطعة</small></span></td><td><span className={`inventory-status ${Number(product.stock) > 5 ? 'inventory-in' : 'inventory-low'}`}><i />{Number(product.stock) > 5 ? 'متوفر' : 'مخزون منخفض'}</span></td><td><div className="row-actions"><button className="icon-button" title="تعديل المنتج" onClick={() => onEdit(product)}><Settings2 size={16} /></button><button className="icon-button delete-action" title="حذف المنتج" onClick={() => onDelete(product)}><Ellipsis size={17} /></button></div></td></tr>; })}</tbody></table></div>;
+function productSizes(product: Product) {
+  const list = Array.isArray(product.sizes) ? product.sizes : [];
+  return list
+    .map((size) => (typeof size === 'string' ? { name: String(size) } : { name: String(size?.name ?? ''), stock: size?.stock }))
+    .filter((size) => size.name.trim());
+}
+
+function productColors(product: Product) {
+  const list = Array.isArray(product.colors) ? product.colors : [];
+  return list.filter((color) => String(color?.name ?? '').trim());
+}
+
+function ProductTable({
+  products,
+  onEdit,
+  onDelete,
+  onDuplicate,
+  onQuickSave,
+  onNotify,
+  selectedIds,
+  onToggleSelect,
+  onSelectAll,
+  mode,
+  stats,
+}: {
+  products: Product[];
+  onEdit: (product: Product) => void;
+  onDelete: (product: Product) => void;
+  onDuplicate: (product: Product) => void;
+  onQuickSave: (productId: string, patch: Record<string, unknown>) => Promise<void>;
+  onNotify: (message: string) => void;
+  selectedIds: string[];
+  onToggleSelect: (productId: string) => void;
+  onSelectAll: () => void;
+  mode: Page;
+  stats?: Record<string, { views?: number; carts?: number }>;
+}) {
+  const [draft, setDraft] = useState<Record<string, { price: string; stock: string }>>({});
+  const [savingId, setSavingId] = useState('');
+
+  useEffect(() => {
+    if (mode !== 'products') return;
+    setDraft(Object.fromEntries(products.map((product) => [product.id, { price: String(product.price ?? ''), stock: String(product.stock ?? '') }])));
+  }, [products, mode]);
+
+  async function commitQuick(product: Product) {
+    const entry = draft[product.id];
+    if (!entry) return;
+    const price = Number(entry.price);
+    const stock = Number(entry.stock);
+    if (!Number.isFinite(price) || price < 0 || !Number.isFinite(stock) || stock < 0) return;
+    if (price === Number(product.price) && stock === Number(product.stock)) return;
+    setSavingId(product.id);
+    try {
+      await onQuickSave(product.id, { price, stock });
+      onNotify(`تم تحديث «${product.name}».`);
+    } catch (reason) {
+      onNotify(getErrorMessage(reason));
+      setDraft((current) => ({ ...current, [product.id]: { price: String(product.price ?? ''), stock: String(product.stock ?? '') } }));
+    } finally {
+      setSavingId('');
+    }
+  }
+
+  if (!products.length) return <EmptyState icon={mode === 'offers' ? Sparkles : Package} title={mode === 'offers' ? 'مفيش عروض مسجلة حالياً' : 'الكتالوج لسه فاضي'} body={mode === 'offers' ? 'أضف سعر عرض لمنتجاتك لعرضها هنا.' : 'ابدأ بضافة أول منتج للمتجر.'} />;
+
+  const allSelected = products.length > 0 && products.every((product) => selectedIds.includes(product.id));
+
+  return (
+    <div className="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            {mode === 'products' ? (
+              <th className="select-cell">
+                <input type="checkbox" aria-label="تحديد الكل" checked={allSelected} onChange={onSelectAll} />
+              </th>
+            ) : null}
+            <th>المنتج</th>
+            <th>التصنيف</th>
+            <th>السعر</th>
+            <th>المخزون</th>
+            {mode === 'products' ? <><th>خيارات</th><th>الأداء</th></> : null}
+            <th>الحالة</th>
+            <th><span className="sr-only">الإجراءات</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {products.map((product, index) => {
+            const coverImage = product.images?.[0]?.url || product.imageUrl;
+            const entry = draft[product.id];
+            const sizes = productSizes(product);
+            const colors = productColors(product);
+            return (
+              <tr key={product.id} className={selectedIds.includes(product.id) ? 'row-selected' : ''}>
+                {mode === 'products' ? (
+                  <td className="select-cell">
+                    <input type="checkbox" aria-label={`تحديد ${product.name}`} checked={selectedIds.includes(product.id)} onChange={() => onToggleSelect(product.id)} />
+                  </td>
+                ) : null}
+                <td>
+                  <div className="product-cell">
+                    {coverImage ? <img className="product-swatch product-thumbnail" src={coverImage} alt={product.name} loading="lazy" /> : <span className={`product-swatch swatch-${index % 5}`}><Shirt size={19} strokeWidth={1.6} /></span>}
+                    <span className="product-name">
+                      <strong>{product.name}</strong>
+                      <small>{product.sku}{product.brand ? ` · ${product.brand}` : ''}</small>
+                      {product.description ? <small className="product-desc-line">{product.description}</small> : null}
+                    </span>
+                  </div>
+                </td>
+                <td><span className="table-label">{product.category || '—'}</span></td>
+                <td className="price-cell">
+                  {mode === 'products' ? (
+                    <div className="quick-edit">
+                      <input
+                        className="quick-edit-input"
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={entry?.price ?? ''}
+                        onChange={(event) => setDraft((current) => ({ ...current, [product.id]: { price: event.target.value, stock: current[product.id]?.stock ?? '' } }))}
+                        onBlur={() => commitQuick(product)}
+                        onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur(); }}
+                        aria-label={`سعر ${product.name}`}
+                      />
+                      <small>ج.م</small>
+                      {product.salePrice ? <del>{money.format(product.salePrice)}</del> : null}
+                    </div>
+                  ) : product.salePrice ? <span className="sale-price">{money.format(product.salePrice)} <del>{money.format(product.price)}</del></span> : money.format(Number(product.price) || 0)}
+                </td>
+                <td>
+                  {mode === 'products' ? (
+                    <div className="quick-edit">
+                      <input
+                        className="quick-edit-input quick-edit-stock"
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={entry?.stock ?? ''}
+                        onChange={(event) => setDraft((current) => ({ ...current, [product.id]: { price: current[product.id]?.price ?? '', stock: event.target.value } }))}
+                        onBlur={() => commitQuick(product)}
+                        onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur(); }}
+                        aria-label={`مخزون ${product.name}`}
+                      />
+                      {savingId === product.id ? <span className="quick-edit-saving">…</span> : null}
+                    </div>
+                  ) : <span className={`stock-quantity ${Number(product.stock) <= 5 ? 'stock-low' : ''}`}>{product.stock ?? 0} <small>قطعة</small></span>}
+                </td>
+                {mode === 'products' ? (
+                  <>
+                    <td>
+                      <span className="variant-summary">
+                        {sizes.length ? <span title="المقاسات">{sizes.map((size) => size.name).slice(0, 4).join('، ')}{sizes.length > 4 ? '…' : ''}</span> : null}
+                        {colors.length ? <span title="الألوان">{colors.length} لون</span> : null}
+                        {!sizes.length && !colors.length ? <span className="muted">—</span> : null}
+                      </span>
+                    </td>
+                    <td>
+                      <span className="perf-cell">
+                        <span title="مشاهدات"><Eye size={13} />{stats?.[product.id]?.views ?? 0}</span>
+                        <span title="إضافات للسلة"><ShoppingBag size={13} />{stats?.[product.id]?.carts ?? 0}</span>
+                      </span>
+                    </td>
+                  </>
+                ) : null}
+                <td><span className={`inventory-status ${Number(product.stock) > 5 ? 'inventory-in' : 'inventory-low'}`}><i />{Number(product.stock) > 5 ? 'متوفر' : 'مخزون منخفض'}</span></td>
+                <td>
+                  <div className="row-actions">
+                    <button className="button button-quiet edit-product-btn" onClick={() => onEdit(product)}><Pencil size={14} /> تعديل</button>
+                    <button className="icon-button" title="تكرار المنتج" onClick={() => onDuplicate(product)}><Copy size={15} /></button>
+                    <button className="icon-button delete-action" title="حذف المنتج" onClick={() => onDelete(product)}><Trash2 size={16} /></button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 function SuppliersTable({ suppliers, purchases, onEdit, onToggle, onDelete }: { suppliers: Supplier[]; purchases: Purchase[]; onEdit: (supplier: Supplier) => void; onToggle: (supplier: Supplier) => void; onDelete: (supplier: Supplier) => void }) {
@@ -522,7 +848,7 @@ function PurchasesTable({ purchases }: { purchases: Purchase[] }) {
 }
 
 function ShippingTable({ rates, onEdit, onToggle, onDelete }: { rates: ShippingRate[]; onEdit: (rate: ShippingRate) => void; onToggle: (rate: ShippingRate) => void; onDelete: (rate: ShippingRate) => void }) {
-  if (!rates.length) return <EmptyState icon={MapPin} title="أضف مناطق التوصيل" body="حدد سعر ومدة التوصيل لكل محافظة أو منطقة تخدمها الورشة." />;
+  if (!rates.length) return <EmptyState icon={MapPin} title="أضف مناطق التوصيل" body="حدد سعر ومدة التوصيل لكل محافظة أو منطقة تخدمها." />;
   return <div className="table-scroll"><table><thead><tr><th>المنطقة</th><th>تكلفة الشحن</th><th>المدة المتوقعة</th><th>الحالة</th><th /></tr></thead><tbody>{rates.map((rate) => <tr key={rate.id}><td><div className="catalog-name-cell"><span className="catalog-avatar category-avatar"><MapPin size={17} /></span><strong>{rate.area}</strong></div></td><td className="price-cell">{money.format(Number(rate.price) || 0)}</td><td>{rate.deliveryDays} أيام عمل</td><td><span className={`catalog-state ${rate.isActive ? 'catalog-enabled' : 'catalog-archived'}`}><i />{rate.isActive ? 'متاح' : 'موقوف'}</span></td><td><div className="row-actions"><button className="icon-button" title="تعديل السعر" onClick={() => onEdit(rate)}><Pencil size={15} /></button><button className="icon-button" title={rate.isActive ? 'إيقاف المنطقة' : 'تفعيل المنطقة'} onClick={() => onToggle(rate)}>{rate.isActive ? <Archive size={15} /> : <ArchiveRestore size={15} />}</button><button className="icon-button delete-action" title="حذف المنطقة" onClick={() => onDelete(rate)}><Trash2 size={15} /></button></div></td></tr>)}</tbody></table></div>;
 }
 
@@ -545,8 +871,25 @@ function NotificationsPanel({ orders, products, reviews, onNavigate }: { orders:
 }
 
 function OrderTable({ orders, busyOrder, onStatusChange }: { orders: Order[]; busyOrder: string; onStatusChange: (id: string, status: OrderStatus) => void }) {
+  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   if (!orders.length) return <EmptyState icon={ShoppingBag} title="مفيش طلبات لحد دلوقتي" body="أي طلب جديد هتلاقيه هنا وتقدر تتابع حالته خطوة بخطوة." />;
-  return <div className="table-scroll"><table><thead><tr><th>رقم الطلب</th><th>العميل</th><th>التاريخ</th><th>القطع</th><th>الإجمالي</th><th>الحالة</th></tr></thead><tbody>{orders.map((order, index) => <tr key={order.id}><td><span className="order-id">#{order.id.slice(-6).toUpperCase()}</span></td><td><div className="customer-cell"><span className={`customer-avatar customer-${index % 5}`}>{initials(order.customerName || 'ع')}</span><span><strong>{order.customerName || 'عميل جديد'}</strong><small>{order.customerPhone || '—'}</small></span></div></td><td className="date-cell">{formatDate(order.createdAt?.seconds)}</td><td>{order.itemsCount ?? 0} قطع</td><td className="price-cell">{money.format(Number(order.total) || 0)}</td><td><div className="status-control"><StatusBadge status={order.status || 'جديد'} /><select aria-label={`تغيير حالة الطلب ${order.id}`} value={order.status || 'جديد'} disabled={busyOrder === order.id} onChange={(event) => onStatusChange(order.id, event.target.value as OrderStatus)}>{statusOptions.map((status) => <option key={status} value={status}>{status}</option>)}</select><ChevronDown size={13} /></div></td></tr>)}</tbody></table></div>;
+  return <><div className="table-scroll"><table><thead><tr><th>رقم الطلب</th><th>العميل</th><th>التاريخ</th><th>القطع</th><th>الإجمالي</th><th>الحالة</th><th><span className="sr-only">التفاصيل</span></th></tr></thead><tbody>{orders.map((order, index) => <tr key={order.id}><td><span className="order-id">#{order.id.slice(-6).toUpperCase()}</span></td><td><div className="customer-cell"><span className={`customer-avatar customer-${index % 5}`}>{initials(order.customerName || 'ع')}</span><span><strong>{order.customerName || 'عميل جديد'}</strong><small>{order.customerPhone || '—'}</small></span></div></td><td className="date-cell">{formatDate(order.createdAt?.seconds)}</td><td>{order.itemsCount ?? 0} قطع</td><td className="price-cell">{money.format(Number(order.total) || 0)}{order.shippingPending && <small className="order-shipping-note"> قبل الشحن</small>}</td><td><div className="status-control"><StatusBadge status={order.status || 'جديد'} /><select aria-label={`تغيير حالة الطلب ${order.id}`} value={order.status || 'جديد'} disabled={busyOrder === order.id} onChange={(event) => onStatusChange(order.id, event.target.value as OrderStatus)}>{statusOptions.map((status) => <option key={status} value={status}>{status}</option>)}</select><ChevronDown size={13} /></div></td><td><button className="icon-button" type="button" title="عرض تفاصيل الطلب" onClick={() => setSelectedOrder(order)}><Eye size={16} /></button></td></tr>)}</tbody></table></div>{selectedOrder && <OrderDetailsDialog order={selectedOrder} onClose={() => setSelectedOrder(null)} />}</>;
+}
+
+function OrderDetailsDialog({ order, onClose }: { order: Order; onClose: () => void }) {
+  const dialogRef = useModalAccessibility(onClose);
+  const items = order.items || [];
+  const subtotal = Number(order.subtotal) || items.reduce((sum, item) => sum + (Number(item.lineTotal) || (Number(item.unitPrice) || 0) * (Number(item.quantity) || 0)), 0);
+
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section ref={dialogRef} tabIndex={-1} className="modal order-details-modal" role="dialog" aria-modal="true" aria-labelledby="order-details-title">
+    <div className="modal-head"><div><span className="eyebrow">تفاصيل الطلب</span><h2 id="order-details-title">#{order.id.slice(-6).toUpperCase()}</h2></div><button className="icon-button" type="button" title="إغلاق" onClick={onClose}><X size={19} /></button></div>
+    <div className="order-detail-columns">
+      <section className="order-detail-section"><h3>بيانات العميل</h3><strong>{order.customerName || 'عميل جديد'}</strong>{order.customerPhone && <a href={`tel:${order.customerPhone}`} dir="ltr"><Phone size={14} />{order.customerPhone}</a>}{order.customerEmail && <a href={`mailto:${order.customerEmail}`} dir="ltr"><Mail size={14} />{order.customerEmail}</a>}</section>
+      <section className="order-detail-section"><h3>التوصيل</h3><strong>{[order.shippingArea, order.city].filter(Boolean).join('، ') || 'منطقة غير محددة'}</strong>{order.address && <p>{order.address}</p>}{order.customerPhone && <a href={whatsappHref(order.customerPhone)} target="_blank" rel="noreferrer"><Send size={14} />مراسلة العميل على واتساب</a>}{order.shippingPending && <div className="order-shipping-pending"><MapPin size={14} /> تكلفة وموعد الشحن بانتظار التأكيد</div>}</section>
+    </div>
+    <section className="order-detail-section order-lines-section"><div className="order-lines-heading"><h3>القطع المطلوبة</h3><span>{order.itemsCount || 0} قطعة</span></div>{items.length ? <div className="order-detail-items">{items.map((item, index) => <div className="order-detail-line" key={`${item.productId || item.sku || item.productName}-${index}`}>{item.imageUrl ? <img src={item.imageUrl} alt={item.productName || 'صورة المنتج'} /> : <span className="order-detail-placeholder"><Package size={18} /></span>}<span className="order-detail-product"><strong>{item.productName || 'منتج'}</strong><small>{item.sku || '—'} · كمية {item.quantity || 0}</small></span><strong className="order-detail-line-total">{money.format(Number(item.lineTotal) || (Number(item.unitPrice) || 0) * (Number(item.quantity) || 0))}</strong></div>)}</div> : <p className="muted">تفاصيل القطع غير متاحة لهذا الطلب القديم.</p>}</section>
+    <div className="order-detail-totals"><div><span>قيمة المنتجات</span><strong>{money.format(subtotal || Number(order.total) || 0)}</strong></div><div><span>الشحن</span><strong>{order.shippingPending ? 'بانتظار التأكيد' : money.format(Number(order.shippingCost) || 0)}</strong></div><div className="order-detail-grand-total"><span>{order.shippingPending ? 'الإجمالي قبل الشحن' : 'الإجمالي'}</span><strong>{money.format(Number(order.total) || 0)}</strong></div></div>
+  </section></div>;
 }
 
 function CustomersTable({ customers }: { customers: Customer[] }) {
@@ -580,6 +923,13 @@ export default function DashboardPage() {
   const [purchases, setPurchases] = useState<Purchase[]>([]);
   const [shippingRates, setShippingRates] = useState<ShippingRate[]>([]);
   const [reviews, setReviews] = useState<Review[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [subscribers, setSubscribers] = useState<Subscriber[]>([]);
+  const [searchLogs, setSearchLogs] = useState<SearchLog[]>([]);
+  const [productStats, setProductStats] = useState<ProductStat[]>([]);
+  const [dailyStats, setDailyStats] = useState<DailyStat[]>([]);
+  const [blogPosts, setBlogPosts] = useState<BlogPost[]>([]);
+  const [infoPages, setInfoPages] = useState<InfoPage[]>([]);
   const [offers, setOffers] = useState<Offer[]>([]);
   const [workshopProfile, setWorkshopProfile] = useState<WorkshopProfile>(defaultWorkshopProfile);
   const [offerModal, setOfferModal] = useState<Offer | null | undefined>(undefined);
@@ -640,8 +990,15 @@ export default function DashboardPage() {
     const stopShippingRates = onSnapshot(collection(db, 'shippingRates'), (snapshot) => setShippingRates(snapshot.docs.map((item) => ({ id: item.id, ...item.data(), isActive: item.data().isActive !== false }) as ShippingRate)), onCollectionError('shippingRates'));
     const stopReviews = onSnapshot(collection(db, 'reviews'), (snapshot) => setReviews(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }) as Review)), onCollectionError('reviews'));
     const stopOffers = onSnapshot(collection(db, 'offers'), (snapshot) => setOffers(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }) as Offer)), onCollectionError('offers'));
+    const stopMessages = onSnapshot(fsQuery(collection(db, 'messages'), orderBy('createdAt', 'desc'), fbLimit(200)), (snapshot) => setMessages(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }) as Message)), onCollectionError('messages'));
+    const stopSubscribers = onSnapshot(fsQuery(collection(db, 'newsletter'), orderBy('createdAt', 'desc'), fbLimit(2000)), (snapshot) => setSubscribers(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }) as Subscriber)), onCollectionError('newsletter'));
+    const stopSearchLogs = onSnapshot(fsQuery(collection(db, 'searchLogs'), orderBy('createdAt', 'desc'), fbLimit(500)), (snapshot) => setSearchLogs(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }) as SearchLog)), onCollectionError('searchLogs'));
+    const stopProductStats = onSnapshot(collection(db, 'productStats'), (snapshot) => setProductStats(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }) as ProductStat)), onCollectionError('productStats'));
+    const stopDailyStats = onSnapshot(fsQuery(collection(db, 'dailyStats'), orderBy('date', 'desc'), fbLimit(90)), (snapshot) => setDailyStats(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }) as DailyStat)), onCollectionError('dailyStats'));
+    const stopBlogPosts = onSnapshot(fsQuery(collection(db, 'blogPosts'), orderBy('publishedAt', 'desc'), fbLimit(100)), (snapshot) => setBlogPosts(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }) as BlogPost)), onCollectionError('blogPosts'));
+    const stopInfoPages = onSnapshot(collection(db, 'pages'), (snapshot) => setInfoPages(snapshot.docs.map((item) => ({ id: item.id, ...item.data() }) as InfoPage)), onCollectionError('pages'));
     const stopWorkshopProfile = onSnapshot(doc(db, 'workshopSettings', 'main'), (snapshot) => setWorkshopProfile({ ...defaultWorkshopProfile, ...(snapshot.exists() ? snapshot.data() : {}) }), onCollectionError('workshopSettings'));
-    return () => { stopProducts(); stopOrders(); stopCustomers(); stopCategories(); stopBrands(); stopSuppliers(); stopPurchases(); stopShippingRates(); stopReviews(); stopOffers(); stopWorkshopProfile(); };
+    return () => { stopProducts(); stopMessages(); stopSubscribers(); stopSearchLogs(); stopProductStats(); stopDailyStats(); stopBlogPosts(); stopInfoPages(); stopOrders(); stopCustomers(); stopCategories(); stopBrands(); stopSuppliers(); stopPurchases(); stopShippingRates(); stopReviews(); stopOffers(); stopWorkshopProfile(); };
   }, [user, authorized]);
 
   useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToast(''), 3000); return () => window.clearTimeout(timer); }, [toast]);
@@ -656,6 +1013,10 @@ export default function DashboardPage() {
     return () => window.removeEventListener('keydown', handleSearchShortcut);
   }, []);
 
+  const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
+  const [bulkAction, setBulkAction] = useState<'price-percent' | 'price-set' | 'stock-set' | ''>('');
+  const [bulkValue, setBulkValue] = useState('');
+  const productStatMap = useMemo(() => Object.fromEntries(productStats.map((stat) => [stat.productId ?? stat.id ?? '', { views: stat.views ?? 0, carts: stat.carts ?? 0 }])), [productStats]);
   const filteredProducts = useMemo(() => {
     const term = query.trim().toLocaleLowerCase('ar');
     return products.filter((product) => {
@@ -716,6 +1077,58 @@ export default function DashboardPage() {
       return datesOverlap && existing.productIds.some((productId) => productSet.has(productId));
     });
   }
+  function toggleProductSelection(productId: string) {
+    setSelectedProductIds((current) => (current.includes(productId) ? current.filter((id) => id !== productId) : [...current, productId]));
+  }
+
+  function toggleSelectAllProducts() {
+    setSelectedProductIds((current) => (current.length === filteredProducts.length ? [] : filteredProducts.map((product) => product.id)));
+  }
+
+  async function quickSaveProduct(productId: string, patch: Record<string, unknown>) {
+    await updateDoc(doc(db, 'products', productId), { ...patch, updatedAt: serverTimestamp() });
+  }
+
+  async function duplicateProduct(product: Product) {
+    const { id, ...rest } = product;
+    void id;
+    await addDoc(collection(db, 'products'), {
+      ...rest,
+      name: `${product.name} (نسخة)`,
+      sku: `${product.sku}-COPY${Math.floor(Math.random() * 90 + 10)}`,
+      stock: 0,
+      createdAt: serverTimestamp(),
+    });
+    setToast('تم تكرار المنتج.');
+  }
+
+  async function applyBulkAction() {
+    const ids = selectedProductIds;
+    const value = Number(bulkValue);
+    if (!ids.length || !bulkAction || !Number.isFinite(value)) { setToast('اختر منتجات واكتب قيمة صحيحة.'); return; }
+    setConfirmation({
+      title: 'تعديل جماعي؟',
+      message: `هيتعدّل ${ids.length} منتج: ${bulkAction === 'price-percent' ? `${value}% على السعر` : bulkAction === 'price-set' ? `سعر ${value}` : `مخزون ${value}`}.`,
+      confirmLabel: 'تطبيق',
+      onConfirm: async () => {
+        const batch = writeBatch(db);
+        for (const productId of ids) {
+          const product = products.find((entry) => entry.id === productId);
+          if (!product) continue;
+          const patch: Record<string, unknown> = {};
+          if (bulkAction === 'price-percent') patch.price = Math.max(0, Math.round((Number(product.price) || 0) * (1 + value / 100)));
+          if (bulkAction === 'price-set') patch.price = value;
+          if (bulkAction === 'stock-set') patch.stock = value;
+          batch.update(doc(db, 'products', productId), { ...patch, updatedAt: serverTimestamp() });
+        }
+        await batch.commit();
+        setSelectedProductIds([]);
+        setBulkValue('');
+        setToast('تم التعديل على المنتجات المختارة.');
+      },
+    });
+  }
+
   async function saveOffer(value: Omit<Offer, 'id'>, id?: string) {
     if (value.isActive && offerHasConflict(value, id)) throw new Error('يوجد عرض مفعّل على قطعة مختارة خلال جزء من هذه المدة. أزل القطعة من العرض الآخر أو غيّر التواريخ.');
     if (id) await updateDoc(doc(db, 'offers', id), { ...value, updatedAt: serverTimestamp() });
@@ -776,7 +1189,7 @@ export default function DashboardPage() {
   }
   async function deleteSupplier(supplier: Supplier) {
     if (purchases.some((purchase) => purchase.supplierId === supplier.id)) { setDataError('المورد مرتبط بفواتير شراء؛ يمكنك أرشفته بدلاً من حذفه.'); return; }
-    setConfirmation({ title: 'حذف المورد؟', message: `سيُحذف المورد «${supplier.name}» من قائمة الورشة.`, confirmLabel: 'حذف المورد', onConfirm: async () => { await deleteDoc(doc(db, 'suppliers', supplier.id)); setToast('تم حذف المورد.'); } });
+    setConfirmation({ title: 'حذف المورد؟', message: `سيُحذف المورد «${supplier.name}» من قائمة الموردين.`, confirmLabel: 'حذف المورد', onConfirm: async () => { await deleteDoc(doc(db, 'suppliers', supplier.id)); setToast('تم حذف المورد.'); } });
   }
   async function savePurchase(supplierId: string, lines: PurchaseLine[]) {
     const supplier = suppliers.find((item) => item.id === supplierId && item.isActive);
@@ -801,10 +1214,38 @@ export default function DashboardPage() {
     else await addDoc(collection(db, 'shippingRates'), { ...payload, createdAt: serverTimestamp() });
     setToast(id ? 'تم تحديث سعر الشحن.' : 'تمت إضافة منطقة الشحن.');
   }
+  async function setMessageStatus(messageId: string, status: string) {
+    try { await updateDoc(doc(db, 'messages', messageId), { status, readAt: serverTimestamp() }); setToast('تم تحديث حالة الرسالة.'); }
+    catch (error) { setDataError(getErrorMessage(error)); }
+  }
+  async function deleteMessage(messageId: string) {
+    setConfirmation({ title: 'حذف الرسالة؟', message: 'مش هينفع ترجعها بعد الحذف.', confirmLabel: 'حذف', onConfirm: async () => { await deleteDoc(doc(db, 'messages', messageId)); setToast('تم حذف الرسالة.'); } });
+  }
+  async function deleteSubscriber(subscriberId: string) {
+    await deleteDoc(doc(db, 'newsletter', subscriberId)); setToast('تم حذف المشترك.');
+  }
+  async function saveBlogPost(postId: string | null, data: Record<string, unknown>) {
+    const payload = { ...(data as Record<string, string | number | boolean>), updatedAt: serverTimestamp() };
+    if (postId) await updateDoc(doc(db, 'blogPosts', postId), payload);
+    else await addDoc(collection(db, 'blogPosts'), { ...payload, createdAt: serverTimestamp() });
+    setToast(postId ? 'تم تحديث المقال.' : 'تم نشر المقال.');
+  }
+  async function deleteBlogPost(postId: string) {
+    setConfirmation({ title: 'حذف المقال؟', message: 'المقال هيختفي من الموقع.', confirmLabel: 'حذف', onConfirm: async () => { await deleteDoc(doc(db, 'blogPosts', postId)); setToast('تم حذف المقال.'); } });
+  }
+  async function saveInfoPage(pageId: string | null, data: Record<string, unknown>) {
+    const payload = { ...(data as Record<string, string | boolean>) };
+    if (pageId) await updateDoc(doc(db, 'pages', pageId), payload);
+    else await addDoc(collection(db, 'pages'), payload);
+    setToast(pageId ? 'تم تحديث الصفحة.' : 'تمت إضافة الصفحة.');
+  }
+  async function deleteInfoPage(pageId: string) {
+    setConfirmation({ title: 'حذف الصفحة؟', message: 'الصفحة هتختفي من الموقع.', confirmLabel: 'حذف', onConfirm: async () => { await deleteDoc(doc(db, 'pages', pageId)); setToast('تم حذف الصفحة.'); } });
+  }
   async function saveWorkshopProfile(profile: WorkshopProfile) {
     const requiredName = profile.name.trim();
-    if (!requiredName) throw new Error('اكتب اسم الورشة أولاً.');
-    const publicUrls = [profile.websiteUrl, profile.mapUrl, profile.instagram, profile.facebook, profile.tiktok].filter(Boolean);
+    if (!requiredName) throw new Error('اكتب اسم العلامة أولاً.');
+    const publicUrls = [profile.websiteUrl, profile.mapUrl, profile.instagram, profile.facebook, profile.tiktok, profile.youtube, profile.x, profile.threads, profile.linkedin, profile.pinterest].filter(Boolean);
     if (publicUrls.some((value) => {
       try { return !['http:', 'https:'].includes(new URL(normalizePublicUrl(value)).protocol); }
       catch { return true; }
@@ -812,7 +1253,7 @@ export default function DashboardPage() {
     if (profile.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(profile.email.trim())) throw new Error('صيغة البريد الإلكتروني غير صحيحة.');
     const saved = { ...profile, name: requiredName, updatedAt: new Date().toISOString() };
     await setDoc(doc(db, 'workshopSettings', 'main'), saved, { merge: true });
-    setToast('تم حفظ معلومات الورشة، وأصبحت متاحة لواجهة الموقع.');
+    setToast('تم حفظ بيانات العلامة، وأصبحت متاحة لواجهة الموقع.');
   }
   async function toggleShippingRate(rate: ShippingRate) {
     try { await updateDoc(doc(db, 'shippingRates', rate.id), { isActive: !rate.isActive, updatedAt: serverTimestamp() }); setToast(rate.isActive ? 'تم إيقاف منطقة الشحن.' : 'تم تفعيل منطقة الشحن.'); }
@@ -877,7 +1318,7 @@ export default function DashboardPage() {
 
   if (!authReady) return <main className="loading-screen"><div className="loading-mark">R/</div><span>جارٍ تجهيز مساحة العمل...</span></main>;
   if (!user) return <Login message={authNotice} />;
-  if (!authorized) return <main className="access-denied"><div className="denied-mark">R/</div><span className="eyebrow">حساب غير مصرّح</span><h1>هذه المساحة للفريق فقط</h1><p>{authNotice || 'تم تسجيل الدخول، لكن هذا الحساب غير مضاف إلى قائمة مديري الورشة.'}</p><div className="admin-identity"><span>{user.email}</span><code dir="ltr">{user.uid}</code><button className="button button-quiet" onClick={async () => { try { await navigator.clipboard.writeText(user.uid); setUidCopied(true); } catch { setUidCopied(false); } }}><Copy size={15} /> {uidCopied ? 'تم نسخ UID' : 'نسخ UID'}</button></div><button className="button button-dark" onClick={exit}><LogOut size={16} /> تسجيل الخروج</button></main>;
+  if (!authorized) return <main className="access-denied"><div className="denied-mark">R/</div><span className="eyebrow">حساب غير مصرّح</span><h1>هذه المساحة للفريق فقط</h1><p>{authNotice || 'تم تسجيل الدخول، لكن هذا الحساب غير مضاف إلى قائمة مديري المتجر.'}</p><div className="admin-identity"><span>{user.email}</span><code dir="ltr">{user.uid}</code><button className="button button-quiet" onClick={async () => { try { await navigator.clipboard.writeText(user.uid); setUidCopied(true); } catch { setUidCopied(false); } }}><Copy size={15} /> {uidCopied ? 'تم نسخ UID' : 'نسخ UID'}</button></div><button className="button button-dark" onClick={exit}><LogOut size={16} /> تسجيل الخروج</button></main>;
 
   const pageActions = page === 'products' ? <button className="button button-lime" onClick={() => setModalProduct(null)}><Plus size={17} /> منتج جديد</button> : page === 'offers' ? <button className="button button-lime" onClick={() => setOfferModal(null)}><Plus size={17} /> عرض جديد</button> : page === 'categories' || page === 'brands' ? <button className="button button-lime" onClick={() => setCatalogModal({ kind: page })}><Plus size={17} /> {page === 'categories' ? 'تصنيف جديد' : 'علامة جديدة'}</button> : page === 'suppliers' ? <button className="button button-lime" onClick={() => setSupplierModal(null)}><Plus size={17} /> مورد جديد</button> : page === 'shippingRates' ? <button className="button button-lime" onClick={() => setShippingModal(null)}><Plus size={17} /> منطقة جديدة</button> : page === 'overview' ? <button className="button button-dark" onClick={() => setPage('products')}><Plus size={17} /> إضافة منتج</button> : undefined;
   const recentOrders = [...orders].sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)).slice(0, 5);
@@ -904,15 +1345,15 @@ export default function DashboardPage() {
 
   return <div className="app-shell">
     <aside className={`sidebar ${mobileNavOpen ? 'sidebar-open' : ''}`}>
-      <div className="brand-lockup">{workshopProfile.websiteUrl ? <a className="brand-home-link" href={normalizePublicUrl(workshopProfile.websiteUrl)} target="_blank" rel="noreferrer" aria-label="فتح موقع R/ONE"><span className="brand-symbol">R/</span><span className="brand-copy">ONE<small>WORKSHOP</small></span></a> : <button className="brand-home-link brand-home-button" type="button" onClick={() => setPage('overview')} aria-label="العودة إلى لوحة المتابعة"><span className="brand-symbol">R/</span><span className="brand-copy">ONE<small>WORKSHOP</small></span></button>}<button className="mobile-close icon-button" onClick={() => setMobileNavOpen(false)} title="إغلاق القائمة"><X size={18} /></button></div>
+      <div className="brand-lockup">{workshopProfile.websiteUrl ? <a className="brand-home-link" href={normalizePublicUrl(workshopProfile.websiteUrl)} target="_blank" rel="noreferrer" aria-label="فتح موقع R/ONE"><BrandLogo size={30} /><span className="brand-copy">ONE<small>R/ONE</small></span></a> : <button className="brand-home-link brand-home-button" type="button" onClick={() => setPage('overview')} aria-label="العودة إلى لوحة المتابعة"><BrandLogo size={30} /><span className="brand-copy">ONE<small>R/ONE</small></span></button>}<button className="mobile-close icon-button" onClick={() => setMobileNavOpen(false)} title="إغلاق القائمة"><X size={18} /></button></div>
       <div className="workspace-switcher" onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setWorkshopMenuOpen(false); }} onKeyDown={(event) => { if (event.key === 'Escape') setWorkshopMenuOpen(false); }}>
         <button className="workspace-picker" type="button" aria-expanded={workshopMenuOpen} aria-controls="workshop-menu" onClick={() => setWorkshopMenuOpen((open) => !open)}>
           <span className="workspace-avatar">{(workshopProfile.name || 'R').trim().slice(0, 1)}</span>
-          <span className="workspace-label"><strong>{workshopProfile.name || 'ورشة الملابس'}</strong><small>{[workshopProfile.city, workshopProfile.governorate].filter(Boolean).join('، ') || 'أضف موقع الورشة'}</small></span>
+          <span className="workspace-label"><strong>{workshopProfile.name || 'R/ONE'}</strong><small>{[workshopProfile.city, workshopProfile.governorate].filter(Boolean).join('، ') || 'أضف موقع العلامة'}</small></span>
           <ChevronDown className={workshopMenuOpen ? 'workspace-chevron workspace-chevron-open' : 'workspace-chevron'} size={15} />
         </button>
-        {workshopMenuOpen && <div className="workspace-menu" id="workshop-menu" role="region" aria-label="تفاصيل الورشة">
-          <div className="workspace-menu-heading"><span className="workspace-live-dot" /> بيانات الورشة</div>
+        {workshopMenuOpen && <div className="workspace-menu" id="workshop-menu" role="region" aria-label="تفاصيل العلامة">
+          <div className="workspace-menu-heading"><span className="workspace-live-dot" /> بيانات العلامة</div>
           {workshopProfile.description && <p className="workspace-menu-description">{workshopProfile.description}</p>}
           {[workshopProfile.address, [workshopProfile.city, workshopProfile.governorate].filter(Boolean).join('، ')].filter(Boolean).map((line) => <div className="workspace-detail" key={line}><MapPin size={14} /><span>{line}</span></div>)}
           {workshopProfile.phone && <a className="workspace-detail" href={`tel:${workshopProfile.phone}`}><Phone size={14} /><span dir="ltr">{workshopProfile.phone}</span></a>}
@@ -920,11 +1361,11 @@ export default function DashboardPage() {
           {workshopProfile.email && <a className="workspace-detail" href={`mailto:${workshopProfile.email}`}><Mail size={14} /><span>{workshopProfile.email}</span></a>}
           {workshopProfile.workingHours && <div className="workspace-detail"><Clock3 size={14} /><span>{workshopProfile.workingHours}</span></div>}
           {workshopProfile.mapUrl && <a className="workspace-map-link" href={normalizePublicUrl(workshopProfile.mapUrl)} target="_blank" rel="noreferrer"><MapPin size={14} /> افتح الموقع على الخريطة <ArrowUpLeft size={12} /></a>}
-          <button className="workspace-edit-button" onClick={() => { setPage('workshopSettings'); setWorkshopMenuOpen(false); }}><Settings2 size={14} /> تعديل معلومات الورشة</button>
+          <button className="workspace-edit-button" onClick={() => { setPage('workshopSettings'); setWorkshopMenuOpen(false); }}><Settings2 size={14} /> تعديل بيانات العلامة</button>
         </div>}
       </div>
       <nav className="side-navigation" aria-label="القائمة الرئيسية">{navGroups.map((group) => <div className="nav-group" key={group.title}><div className="nav-group-title">{group.title}</div>{group.items.map(({ id, label, icon: Icon }) => <button key={id} className={`nav-link ${page === id ? 'nav-active' : ''}`} onClick={() => { setPage(id); setQuery(''); setMobileNavOpen(false); setWorkshopMenuOpen(false); }}><Icon size={17} strokeWidth={1.8} /><span>{label}</span>{id === 'orders' && pendingOrders > 0 && <b className="nav-count">{pendingOrders}</b>}</button>)}</div>)}</nav>
-      <div className="sidebar-bottom"><button className="nav-link" onClick={() => setToast('للمساعدة تواصل مع مسؤول النظام.')}><CircleHelp size={17} /><span>المساعدة والدعم</span></button><div className="profile-card"><span className="profile-avatar">{initials(user.displayName || user.email || 'R')}</span><span className="profile-info"><strong>{user.displayName || 'مدير الورشة'}</strong><small>{user.email}</small></span><button className="profile-logout" title="تسجيل الخروج" onClick={exit}><LogOut size={16} /></button></div></div>
+      <div className="sidebar-bottom"><button className="nav-link" onClick={() => setToast('للمساعدة تواصل مع مسؤول النظام.')}><CircleHelp size={17} /><span>المساعدة والدعم</span></button><div className="profile-card"><span className="profile-avatar">{initials(user.displayName || user.email || 'R')}</span><span className="profile-info"><strong>{user.displayName || 'مدير المتجر'}</strong><small>{user.email}</small></span><button className="profile-logout" title="تسجيل الخروج" onClick={exit}><LogOut size={16} /></button></div></div>
     </aside>
     {mobileNavOpen && <button className="nav-scrim" aria-label="إغلاق القائمة" onClick={() => setMobileNavOpen(false)} />}
     <main className="main-area">
@@ -937,8 +1378,27 @@ export default function DashboardPage() {
           <section className="overview-grid"><article className="panel sales-panel"><div className="panel-heading"><div><span className="eyebrow">حركة البيع</span><h2>الطلبات خلال الأسبوع</h2></div><span className="panel-icon"><Activity size={17} /></span></div><OverviewChart orders={orders} /></article><article className="panel status-panel"><div className="panel-heading"><div><span className="eyebrow">حالة التشغيل</span><h2>ملخص الطلبات</h2></div><button className="text-link" onClick={() => setPage('orders')}>كل الطلبات <ArrowUpLeft size={14} /></button></div><div className="status-summary"><div className="status-ring" style={{ '--ring-value': `${orders.length ? (orders.filter((order) => order.status === 'مكتمل').length / orders.length) * 100 : 0}%` } as React.CSSProperties}><div><strong>{orders.length}</strong><span>طلب</span></div></div><div className="status-legend"><div><i className="legend-lime" /><span>مكتمل</span><strong>{orders.filter((order) => order.status === 'مكتمل').length}</strong></div><div><i className="legend-blue" /><span>قيد التنفيذ</span><strong>{pendingOrders}</strong></div><div><i className="legend-gray" /><span>ملغي</span><strong>{orders.filter((order) => order.status === 'ملغي').length}</strong></div></div></div></article></section>
           <section className="panel table-panel"><div className="panel-heading table-heading"><div><span className="eyebrow">آخر حركة</span><h2>أحدث الطلبات</h2></div><button className="text-link" onClick={() => setPage('orders')}>عرض الكل <ArrowUpLeft size={14} /></button></div><OrderTable orders={recentOrders} busyOrder={busyOrder} onStatusChange={setOrderStatus} /><div className="panel-footer"><span>{orders.length} طلب مسجل</span><span>مزامنة مباشرة <i className="live-dot" /></span></div></section>
         </>}
+        {page === 'analytics' && <AnalyticsPanel orders={orders} products={products} customers={customers} reviews={reviews} searchLogs={searchLogs} productStats={productStats} dailyStats={dailyStats} messages={messages} onNavigate={(next) => { setPage(next as Page); setQuery(''); }} />}
+        {page === 'messages' && <MessagesPanel messages={messages} onStatus={setMessageStatus} onDelete={deleteMessage} />}
+        {page === 'newsletter' && <NewsletterPanel subscribers={subscribers} onDelete={deleteSubscriber} />}
+        {page === 'blog' && <BlogPanel posts={blogPosts} onSave={saveBlogPost} onDelete={deleteBlogPost} />}
+        {page === 'pages' && <PagesPanel pages={infoPages} onSave={saveInfoPage} onDelete={deleteInfoPage} />}
         {(page === 'categories' || page === 'brands') && <section className="panel data-panel"><div className="table-toolbar"><div className="toolbar-info"><span className="result-count">{page === 'categories' ? `${categoryCount} تصنيف` : `${brandCount} علامة`}</span><span className="muted">السجلات النشطة والمؤرشفة</span></div><SearchBox value={query} onChange={setQuery} label="البحث في الكتالوج" placeholder={page === 'categories' ? 'ابحث عن تصنيف...' : 'ابحث عن علامة...'} /></div><CatalogTable kind={page} entries={page === 'categories' ? categories : brands} products={products} query={query} onEdit={(entry) => setCatalogModal({ kind: page, entry })} onToggle={(entry) => toggleCatalogEntry(page, entry)} onDelete={(entry) => deleteCatalogEntry(page, entry)} /><div className="panel-footer"><span>{page === 'categories' ? 'التصنيفات' : 'العلامات التجارية'} مرتبطة بالمنتجات</span><span>مزامنة مباشرة <i className="live-dot" /></span></div></section>}
-        {page === 'products' && <section className="panel data-panel"><div className="table-toolbar"><div className="toolbar-info"><span className="result-count">{filteredProducts.length} منتج</span><span className="muted">أسعار القطع الأساسية وأسعار العروض النشطة</span></div><div className="toolbar-controls"><SearchBox value={query} onChange={setQuery} label="البحث في المنتجات" placeholder="ابحث بالاسم أو الكود..." /><select className="filter-select" aria-label="تصفية حسب التصنيف" value={productCategoryFilter} onChange={(event) => setProductCategoryFilter(event.target.value)}><option value="all">كل التصنيفات</option>{categories.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select><select className="filter-select" aria-label="تصفية حسب العلامة التجارية" value={productBrandFilter} onChange={(event) => setProductBrandFilter(event.target.value)}><option value="all">كل العلامات</option>{brands.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select><select className="filter-select" aria-label="تصفية حسب المخزون" value={stockFilter} onChange={(event) => setStockFilter(event.target.value)}><option value="all">كل المخزون</option><option value="available">متوفر</option><option value="low">مخزون منخفض</option></select></div></div><ProductTable products={resolvedProducts} onEdit={setModalProduct} onDelete={deleteProduct} mode={page} /><div className="panel-footer"><span>عرض {filteredProducts.length} من {products.length} منتج</span><button className="clear-filters" type="button" onClick={() => { setQuery(''); setProductCategoryFilter('all'); setProductBrandFilter('all'); setStockFilter('all'); }}>مسح البحث والفلاتر</button><span>الأسعار بالجنيه المصري</span></div></section>}
+        {page === 'products' && selectedProductIds.length ? (
+          <section className="bulk-bar">
+            <span className="bulk-count">محدد <b>{selectedProductIds.length}</b> منتج</span>
+            <select aria-label="نوع التعديل الجماعي" value={bulkAction} onChange={(event) => setBulkAction(event.target.value as typeof bulkAction)}>
+              <option value="">اختر التعديل</option>
+              <option value="price-percent">تعديل السعر % (مثلاً -10)</option>
+              <option value="price-set">تعيين سعر</option>
+              <option value="stock-set">تعيين المخزون</option>
+            </select>
+            <input type="number" step="1" placeholder="القيمة" value={bulkValue} onChange={(event) => setBulkValue(event.target.value)} disabled={!bulkAction} />
+            <button className="button button-dark" type="button" onClick={applyBulkAction} disabled={!bulkAction || !bulkValue}><Check size={15} /> تطبيق على المحدد</button>
+            <button className="button button-quiet" type="button" onClick={() => setSelectedProductIds([])}><X size={15} /> إلغاء التحديد</button>
+          </section>
+        ) : null}
+        {page === 'products' && <section className="panel data-panel"><div className="table-toolbar"><div className="toolbar-info"><span className="result-count">{filteredProducts.length} منتج</span><span className="muted">أسعار القطع الأساسية وأسعار العروض النشطة</span></div><div className="toolbar-controls"><SearchBox value={query} onChange={setQuery} label="البحث في المنتجات" placeholder="ابحث بالاسم أو الكود..." /><select className="filter-select" aria-label="تصفية حسب التصنيف" value={productCategoryFilter} onChange={(event) => setProductCategoryFilter(event.target.value)}><option value="all">كل التصنيفات</option>{categories.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select><select className="filter-select" aria-label="تصفية حسب العلامة التجارية" value={productBrandFilter} onChange={(event) => setProductBrandFilter(event.target.value)}><option value="all">كل العلامات</option>{brands.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select><select className="filter-select" aria-label="تصفية حسب المخزون" value={stockFilter} onChange={(event) => setStockFilter(event.target.value)}><option value="all">كل المخزون</option><option value="available">متوفر</option><option value="low">مخزون منخفض</option></select></div></div><ProductTable onNotify={setToast} onQuickSave={quickSaveProduct} onDuplicate={duplicateProduct} selectedIds={[]} onToggleSelect={() => undefined} onSelectAll={() => undefined} products={resolvedProducts} onEdit={setModalProduct} onDelete={deleteProduct} mode={page} /><div className="panel-footer"><span>عرض {filteredProducts.length} من {products.length} منتج</span><button className="clear-filters" type="button" onClick={() => { setQuery(''); setProductCategoryFilter('all'); setProductBrandFilter('all'); setStockFilter('all'); }}>مسح البحث والفلاتر</button><span>الأسعار بالجنيه المصري</span></div></section>}
         {page === 'offers' && <section className="panel data-panel"><div className="table-toolbar"><div className="toolbar-info"><span className="result-count">{filteredOffers.length} حملة</span><span className="muted">{offers.filter((offer) => getOfferState(offer) === 'نشط').length} نشطة الآن · الخصم يطبق على القطع المحددة فقط</span></div><div className="toolbar-controls"><SearchBox value={query} onChange={setQuery} label="البحث في العروض" placeholder="ابحث باسم الحملة..." /><select className="filter-select" aria-label="تصفية العروض حسب الحالة" value={offerStatusFilter} onChange={(event) => setOfferStatusFilter(event.target.value)}><option value="all">كل الحالات</option><option value="نشط">نشط الآن</option><option value="مجدول">مجدول</option><option value="منتهي">منتهي</option><option value="متوقف">متوقف</option></select></div></div><OfferTable offers={filteredOffers} products={products} query={query} onEdit={setOfferModal} onToggle={toggleOffer} onDelete={deleteOffer} /><div className="panel-footer"><span>لا تتداخل حملتان نشطتان على القطعة نفسها</span><button className="clear-filters" type="button" onClick={() => { setQuery(''); setOfferStatusFilter('all'); }}>مسح البحث والفلاتر</button><span>تحديث مباشر <i className="live-dot" /></span></div></section>}
         {page === 'orders' && <section className="panel data-panel"><div className="table-toolbar"><div className="toolbar-info"><span className="result-count">{filteredOrders.length} طلب</span><span className="muted">{pendingOrders} بحاجة إلى متابعة</span></div><div className="toolbar-controls"><SearchBox value={query} onChange={setQuery} label="البحث في الطلبات" placeholder="ابحث برقم الطلب أو العميل..." /><select className="filter-select" aria-label="تصفية الطلبات حسب الحالة" value={orderStatusFilter} onChange={(event) => setOrderStatusFilter(event.target.value)}><option value="all">كل الحالات</option>{statusOptions.map((status) => <option key={status} value={status}>{status}</option>)}</select></div></div><OrderTable orders={[...filteredOrders].sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0))} busyOrder={busyOrder} onStatusChange={setOrderStatus} /><div className="panel-footer"><span>تحديثات الحالة تحفظ مباشرة</span><button className="clear-filters" type="button" onClick={() => { setQuery(''); setOrderStatusFilter('all'); }}>مسح البحث والفلاتر</button><span><i className="live-dot" /> متصل بقاعدة البيانات</span></div></section>}
         {page === 'customers' && <section className="panel data-panel"><div className="table-toolbar"><div className="toolbar-info"><span className="result-count">{filteredCustomers.length} عميل</span><span className="muted">سجل العملاء</span></div><SearchBox value={query} onChange={setQuery} label="البحث في العملاء" placeholder="ابحث بالاسم أو رقم الهاتف..." /></div><CustomersTable customers={filteredCustomers} /><div className="panel-footer"><span>البيانات مرتبطة بسجل الطلبات</span><span>تحديث مباشر <i className="live-dot" /></span></div></section>}
@@ -947,13 +1407,13 @@ export default function DashboardPage() {
         {page === 'reviews' && <section className="panel data-panel"><div className="table-toolbar"><div className="toolbar-info"><span className="result-count">{filteredReviews.length} تقييم</span><span className="muted">{reviews.filter((review) => !review.status || review.status === 'جديدة').length} بانتظار المراجعة</span></div><SearchBox value={query} onChange={setQuery} label="البحث في التقييمات" placeholder="ابحث بالعميل أو المنتج..." /></div><ReviewsTable reviews={filteredReviews} onStatusChange={setReviewStatus} /><div className="panel-footer"><span>غيّر حالة التقييم من القائمة</span><span>مزامنة مباشرة <i className="live-dot" /></span></div></section>}
         {page === 'notifications' && <section className="panel data-panel notifications-panel"><NotificationsPanel orders={orders} products={products} reviews={reviews} onNavigate={(nextPage) => { setPage(nextPage); setQuery(''); }} /></section>}
         {page === 'workshopSettings' && <WorkshopSettingsForm profile={workshopProfile} onSave={saveWorkshopProfile} />}
-        <footer className="page-footer"><span>R/ONE WORKSHOP</span><span>تفصيل على مقاس شغلك.</span><span>بياناتك محمية ومزامنة عبر Firebase</span></footer>
+        <footer className="page-footer"><span>R/ONE</span><span>تفاصيل معمولة علشان تعيش.</span><span>بياناتك محمية ومزامنة عبر Firebase</span></footer>
       </div>
     </main>
     {modalProduct !== undefined && <ProductModal product={modalProduct || undefined} categories={categories} brands={brands} onClose={() => setModalProduct(undefined)} onManage={(kind) => { setModalProduct(undefined); setPage(kind); }} onSave={saveProduct} />}
     {catalogModal && <CatalogModal kind={catalogModal.kind} entry={catalogModal.entry} onClose={() => setCatalogModal(null)} onSave={(value, id) => saveCatalog(catalogModal.kind, value, id)} />}
     {offerModal !== undefined && <OfferModal offer={offerModal || undefined} products={products} onClose={() => setOfferModal(undefined)} onSave={saveOffer} />}
-    {supplierModal !== undefined && <RecordModal title={supplierModal ? 'تعديل بيانات المورد' : 'إضافة مورد'} initial={supplierModal ? { name: supplierModal.name, contactName: supplierModal.contactName || '', phone: supplierModal.phone || '', email: supplierModal.email || '', address: supplierModal.address || '', notes: supplierModal.notes || '' } : undefined} fields={[{ key: 'name', label: 'اسم المورد', required: true, placeholder: 'اسم الشركة أو الورشة' }, { key: 'contactName', label: 'مسؤول التواصل', placeholder: 'الاسم' }, { key: 'phone', label: 'رقم الهاتف', type: 'tel', placeholder: '+20' }, { key: 'email', label: 'البريد الإلكتروني', type: 'email', placeholder: 'supplier@example.com' }, { key: 'address', label: 'العنوان', placeholder: 'المدينة أو العنوان' }, { key: 'notes', label: 'ملاحظات', type: 'textarea', placeholder: 'تفاصيل التعامل أو مواعيد التوريد' }]} onClose={() => setSupplierModal(undefined)} onSave={(values) => saveSupplier(values, supplierModal?.id)} />}
+    {supplierModal !== undefined && <RecordModal title={supplierModal ? 'تعديل بيانات المورد' : 'إضافة مورد'} initial={supplierModal ? { name: supplierModal.name, contactName: supplierModal.contactName || '', phone: supplierModal.phone || '', email: supplierModal.email || '', address: supplierModal.address || '', notes: supplierModal.notes || '' } : undefined} fields={[{ key: 'name', label: 'اسم المورد', required: true, placeholder: 'اسم الشركة أو المورد' }, { key: 'contactName', label: 'مسؤول التواصل', placeholder: 'الاسم' }, { key: 'phone', label: 'رقم الهاتف', type: 'tel', placeholder: '+20' }, { key: 'email', label: 'البريد الإلكتروني', type: 'email', placeholder: 'supplier@example.com' }, { key: 'address', label: 'العنوان', placeholder: 'المدينة أو العنوان' }, { key: 'notes', label: 'ملاحظات', type: 'textarea', placeholder: 'تفاصيل التعامل أو مواعيد التوريد' }]} onClose={() => setSupplierModal(undefined)} onSave={(values) => saveSupplier(values, supplierModal?.id)} />}
     {shippingModal !== undefined && <RecordModal title={shippingModal ? 'تعديل منطقة الشحن' : 'إضافة منطقة شحن'} initial={shippingModal ? { area: shippingModal.area, price: String(shippingModal.price), deliveryDays: String(shippingModal.deliveryDays) } : undefined} fields={[{ key: 'area', label: 'المحافظة أو المنطقة', required: true, placeholder: 'مثال: القاهرة' }, { key: 'price', label: 'تكلفة الشحن بالجنيه', type: 'number', min: 0, required: true, placeholder: '60' }, { key: 'deliveryDays', label: 'مدة التوصيل بالأيام', type: 'number', min: 1, required: true, placeholder: '2' }]} onClose={() => setShippingModal(undefined)} onSave={(values) => saveShippingRate(values, shippingModal?.id)} />}
     {purchaseModal && <PurchaseModal products={products} suppliers={suppliers} onClose={() => setPurchaseModal(false)} onSave={savePurchase} />}
     {confirmation && <ConfirmDialog confirmation={confirmation} onClose={() => setConfirmation(null)} />}
