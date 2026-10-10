@@ -1,6 +1,8 @@
 'use client';
 
 import Image from 'next/image';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
   Activity,
@@ -56,19 +58,14 @@ import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } fr
 import { addDoc, collection, deleteDoc, doc, getDoc, increment, limit as fbLimit, onSnapshot, orderBy, query as fsQuery, serverTimestamp, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 import { defaultWorkshopProfile, normalizePublicUrl, type WorkshopProfile } from './workshop-profile';
+import { buildProductDraft, getErrorMessage, normalizeLabel, uploadProductImages, alphaSizePresets, numericSizePresets, type CatalogEntry, type CatalogKind, type Product, type ProductColor, type ProductImage, type ProductSize } from './product-shared';
 import { WorkshopSettingsForm } from './workshop-settings-form';
 import { AnalyticsPanel, BlogPanel, MessagesPanel, NewsletterPanel, PagesPanel } from './insights';
 
 type Page = 'overview' | 'analytics' | 'products' | 'brands' | 'categories' | 'offers' | 'orders' | 'suppliers' | 'customers' | 'reviews' | 'messages' | 'newsletter' | 'blog' | 'pages' | 'notifications' | 'shippingRates' | 'workshopSettings';
-type CatalogKind = 'brands' | 'categories';
 type OrderStatus = 'جديد' | 'قيد التجهيز' | 'تم الشحن' | 'مكتمل' | 'ملغي';
-type ProductImage = { url: string; publicId: string };
-type ProductSize = { name: string; stock?: number };
-type ProductColor = { name: string; hex?: string; imageUrl?: string; publicId?: string; stock?: number };
-type Product = { id: string; name: string; sku: string; category: string; categoryId?: string; brand: string; brandId?: string; description?: string; price: number; salePrice?: number; offerTitle?: string; images?: ProductImage[]; imageUrl?: string; imagePublicId?: string; stock: number; sizes?: ProductSize[]; colors?: ProductColor[] };
-type CatalogEntry = { id: string; name: string; description?: string; isActive: boolean; createdAt?: { seconds: number } };
 type OrderItem = { productId?: string; productName?: string; sku?: string; imageUrl?: string; quantity?: number; unitPrice?: number; lineTotal?: number };
-type Order = { id: string; customerName: string; customerPhone?: string; customerEmail?: string; itemsCount: number; items?: OrderItem[]; subtotal?: number; shippingArea?: string; shippingCost?: number | null; shippingPending?: boolean; city?: string; address?: string; total: number; status: OrderStatus; createdAt?: { seconds: number } };
+type Order = { id: string; source?: 'storefront' | 'whatsapp' | 'quick-buy'; customerName: string; customerPhone?: string; customerEmail?: string; itemsCount: number; items?: OrderItem[]; subtotal?: number; shippingArea?: string; shippingCost?: number | null; shippingPending?: boolean; city?: string; address?: string; total: number; status: OrderStatus; createdAt?: { seconds: number } };
 type Customer = { id: string; name: string; email?: string; phone?: string; ordersCount?: number; totalSpent?: number; createdAt?: { seconds: number } };
 type Supplier = { id: string; name: string; contactName?: string; phone?: string; email?: string; address?: string; notes?: string; isActive: boolean; createdAt?: { seconds: number } };
 type PurchaseLine = { productId: string; productName: string; quantity: number; unitCost: number };
@@ -87,8 +84,6 @@ type GlobalSearchResult = { id: string; title: string; detail: string; type: str
 
 const money = new Intl.NumberFormat('ar-EG', { style: 'currency', currency: 'EGP', maximumFractionDigits: 0 });
 const statusOptions: OrderStatus[] = ['جديد', 'قيد التجهيز', 'تم الشحن', 'مكتمل', 'ملغي'];
-const alphaSizePresets = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'XXXXL'];
-const numericSizePresets = ['30', '32', '34', '36', '38', '40', '42', '44'];
 const navGroups: { title: string; items: { id: Page; label: string; icon: typeof LayoutDashboard }[] }[] = [
   { title: 'نظرة عامة', items: [{ id: 'overview', label: 'لوحة المتابعة', icon: LayoutDashboard }, { id: 'analytics', label: 'التحليلات', icon: ChartNoAxesColumn }] },
   { title: 'الكتالوج', items: [{ id: 'products', label: 'المنتجات', icon: Shirt }, { id: 'brands', label: 'العلامات التجارية', icon: Tags }, { id: 'categories', label: 'التصنيفات', icon: Boxes }, { id: 'offers', label: 'العروض', icon: Sparkles }] },
@@ -117,60 +112,6 @@ const pageCopy: Record<Page, { title: string; eyebrow: string; description: stri
   workshopSettings: { title: 'بيانات العلامة', eyebrow: 'الإعدادات', description: 'بيانات التواصل ووسائل التواصل الاجتماعي التي تظهر لزوار الموقع.' },
 };
 
-function getErrorMessage(error: unknown) {
-  const code = typeof error === 'object' && error && 'code' in error ? String(error.code) : '';
-  if (code.includes('wrong-password') || code.includes('invalid-credential') || code.includes('user-not-found')) return 'البريد الإلكتروني أو كلمة المرور غير صحيحة.';
-  if (code.includes('network-request-failed')) return 'تعذّر الاتصال. تحقّق من الإنترنت وحاول مرة أخرى.';
-  if (code.includes('permission-denied')) return 'لا توجد صلاحية للوصول. راجع إعدادات المدير وقواعد Firebase.';
-  return 'حدث خطأ غير متوقع. حاول مرة أخرى.';
-}
-
-async function uploadProductImages(files: File[]): Promise<ProductImage[]> {
-  if (!files.length) return [];
-  if (files.length > 8) throw new Error('يمكن إضافة 8 صور كحد أقصى لكل منتج.');
-  const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/avif'];
-  if (files.some((file) => !allowedTypes.includes(file.type))) throw new Error('اختر صوراً بصيغة JPG أو PNG أو WEBP أو AVIF فقط.');
-  if (files.some((file) => file.size > 8 * 1024 * 1024)) throw new Error('يجب ألا يتجاوز حجم كل صورة 8 ميجابايت.');
-
-  const idToken = await auth.currentUser?.getIdToken();
-  if (!idToken) throw new Error('انتهت جلسة الدخول. سجّل الدخول مرة أخرى.');
-
-  const signatureResponse = await fetch('/api/cloudinary/sign', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${idToken}` },
-  });
-  const signature = await signatureResponse.json() as {
-    error?: string;
-    cloudName?: string;
-    apiKey?: string;
-    timestamp?: number;
-    folder?: string;
-    signature?: string;
-  };
-  if (!signatureResponse.ok || !signature.cloudName || !signature.apiKey || !signature.signature || !signature.folder || !signature.timestamp) {
-    throw new Error(signature.error || 'تعذر تجهيز رفع الصورة.');
-  }
-
-  return Promise.all(files.map(async (file) => {
-    const payload = new FormData();
-    payload.append('file', file);
-    payload.append('api_key', signature.apiKey!);
-    payload.append('timestamp', String(signature.timestamp));
-    payload.append('folder', signature.folder!);
-    payload.append('signature', signature.signature!);
-
-    const uploadResponse = await fetch(`https://api.cloudinary.com/v1_1/${signature.cloudName}/image/upload`, {
-      method: 'POST',
-      body: payload,
-    });
-    const uploaded = await uploadResponse.json() as { secure_url?: string; public_id?: string; error?: { message?: string } };
-    if (!uploadResponse.ok || !uploaded.secure_url || !uploaded.public_id) {
-      throw new Error(uploaded.error?.message || 'فشل رفع صورة إلى Cloudinary.');
-    }
-    return { url: uploaded.secure_url, publicId: uploaded.public_id };
-  }));
-}
-
 function BrandLogo({ size = 30, ghost = false }: { size?: number; ghost?: boolean }) {
   return <span className={`dash-logo${ghost ? ' dash-logo-ghost' : ''}`} style={{ '--dash-logo-size': `${size}px` } as React.CSSProperties}>
     <Image src="/logo.png" alt="R/ONE" width={size} height={size} className="dash-logo-img" draggable={false} />
@@ -190,10 +131,6 @@ function whatsappHref(value: string) {
 function formatDate(seconds?: number) {
   if (!seconds) return '—';
   return new Intl.DateTimeFormat('ar-EG', { day: 'numeric', month: 'short' }).format(new Date(seconds * 1000));
-}
-
-function normalizeLabel(value: string) {
-  return value.trim().toLocaleLowerCase('ar');
 }
 
 function Login({ message }: { message?: string }) {
@@ -441,212 +378,6 @@ function PurchaseModal({ products, suppliers, onClose, onSave }: { products: Pro
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section ref={dialogRef} tabIndex={-1} className="modal purchase-modal" role="dialog" aria-modal="true" aria-labelledby="purchase-modal-title"><div className="modal-head"><div><span className="eyebrow">حركة المخزون</span><h2 id="purchase-modal-title">تسجيل مشتريات واردة</h2></div><button className="icon-button" title="إغلاق" onClick={onClose}><X size={19} /></button></div><form onSubmit={submit}><label className="purchase-supplier-field">المورد<select required value={supplierId} onChange={(event) => setSupplierId(event.target.value)}><option value="">اختر المورد</option>{suppliers.filter((supplier) => supplier.isActive).map((supplier) => <option value={supplier.id} key={supplier.id}>{supplier.name}</option>)}</select></label><div className="purchase-lines"><div className="purchase-lines-head"><span>الصنف</span><span>الكمية</span><span>تكلفة الوحدة</span><span /></div>{lines.map((line, index) => <div className="purchase-line" key={index}><select aria-label="المنتج" required value={line.productId} onChange={(event) => setLine(index, 'productId', event.target.value)}><option value="">اختر المنتج</option>{products.map((product) => <option value={product.id} key={product.id}>{product.name} · مخزون {product.stock}</option>)}</select><input aria-label="الكمية" type="number" min="1" step="1" required value={line.quantity} onChange={(event) => setLine(index, 'quantity', event.target.value)} /><input aria-label="تكلفة الوحدة" type="number" min="0" step="0.01" required value={line.unitCost} onChange={(event) => setLine(index, 'unitCost', event.target.value)} placeholder="0" /><button className="icon-button" type="button" disabled={lines.length === 1} title="حذف البند" onClick={() => setLines((current) => current.filter((_, lineIndex) => lineIndex !== index))}><X size={15} /></button></div>)}</div><button className="field-action add-purchase-line" type="button" onClick={() => setLines((current) => [...current, { productId: '', quantity: '1', unitCost: '' }])}><Plus size={14} /> إضافة صنف</button><div className="purchase-total"><span>إجمالي الفاتورة</span><strong>{money.format(total)}</strong></div>{error && <p className="form-error" role="alert">{error}</p>}<div className="modal-actions"><button className="button button-quiet" type="button" onClick={onClose}>إلغاء</button><button className="button button-dark" type="submit" disabled={busy || !suppliers.some((supplier) => supplier.isActive) || !products.length}>{busy ? <><LoaderCircle className="spin-icon" size={15} /> جارٍ تسجيل الشراء...</> : <><Check size={16} /> اعتماد وإضافة للمخزون</>}</button></div></form></section></div>;
 }
 
-function ProductModal({ product, categories, brands, onClose, onManage, onSave }: { product?: Product; categories: CatalogEntry[]; brands: CatalogEntry[]; onClose: () => void; onManage: (kind: CatalogKind) => void; onSave: (value: Omit<Product, 'id'>, id?: string) => Promise<void> }) {
-  const dialogRef = useModalAccessibility(onClose);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const originalImages = product?.images?.length ? product.images : product?.imageUrl ? [{ url: product.imageUrl, publicId: product.imagePublicId || '' }] : [];
-  const [images, setImages] = useState<Array<{ url: string; publicId: string; file?: File }>>(originalImages);
-  const previewUrls = useRef<string[]>([]);
-  const categoryMatch = categories.find((entry) => entry.id === product?.categoryId || normalizeLabel(entry.name) === normalizeLabel(product?.category || ''));
-  const brandMatch = brands.find((entry) => entry.id === product?.brandId || normalizeLabel(entry.name) === normalizeLabel(product?.brand || ''));
-  const [form, setForm] = useState({ name: product?.name || '', sku: product?.sku || '', categoryId: product?.categoryId || categoryMatch?.id || '', brandId: product?.brandId || brandMatch?.id || '', category: product?.category || '', brand: product?.brand || '', description: product?.description || '', price: product?.price?.toString() || '', stock: product?.stock?.toString() || '' });
-  const [sizes, setSizes] = useState<ProductSize[]>(() => (product?.sizes ?? []).filter(Boolean).map((size) => ({ ...size })));
-  const [colors, setColors] = useState<ProductColor[]>(() => (product?.colors ?? []).filter(Boolean).map((color) => ({ ...color })));
-  const [sizeInput, setSizeInput] = useState('');
-  const [colorDraft, setColorDraft] = useState<{ name: string; hex: string; imageUrl: string }>({ name: '', hex: '#E46A29', imageUrl: '' });
-
-  function addSize(value: string) {
-    const name = value.trim();
-    if (!name) return;
-    if (sizes.some((size) => size.name.toLowerCase() === name.toLowerCase())) { setSizeInput(''); return; }
-    setSizes((current) => [...current, { name }]);
-    setSizeInput('');
-  }
-
-  function addColor() {
-    const name = colorDraft.name.trim();
-    if (!name) { setError('اكتب اسم اللون الأول.'); return; }
-    if (colors.some((color) => color.name.toLowerCase() === name.toLowerCase())) { setError('اللون ده مضاف بالفعل.'); return; }
-    const match = images.find((image) => image.url === colorDraft.imageUrl);
-    setColors((current) => [...current, { name, hex: colorDraft.hex, imageUrl: colorDraft.imageUrl, publicId: match?.publicId || '' }]);
-    setColorDraft({ name: '', hex: '#E46A29', imageUrl: '' });
-    setError('');
-  }
-  const setField = (field: keyof typeof form, value: string) => setForm((current) => ({ ...current, [field]: value }));
-  useEffect(() => () => previewUrls.current.forEach((url) => URL.revokeObjectURL(url)), []);
-
-  function addImages(files: FileList | null) {
-    if (!files?.length) return;
-    const selected = Array.from(files);
-    if (images.length + selected.length > 8) { setError('يمكن إضافة 8 صور كحد أقصى لكل منتج.'); return; }
-    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/avif'];
-    if (selected.some((file) => !allowedTypes.includes(file.type))) { setError('اختر صوراً بصيغة JPG أو PNG أو WEBP أو AVIF فقط.'); return; }
-    if (selected.some((file) => file.size > 8 * 1024 * 1024)) { setError('يجب ألا يتجاوز حجم كل صورة 8 ميجابايت.'); return; }
-    const newImages = selected.map((file) => {
-      const url = URL.createObjectURL(file);
-      previewUrls.current.push(url);
-      return { url, publicId: '', file };
-    });
-    setError('');
-    setImages((current) => [...current, ...newImages]);
-  }
-
-  function removeImage(index: number) {
-    setImages((current) => {
-      const removed = current[index];
-      if (removed?.file) {
-        URL.revokeObjectURL(removed.url);
-        previewUrls.current = previewUrls.current.filter((url) => url !== removed.url);
-      }
-      return current.filter((_, imageIndex) => imageIndex !== index);
-    });
-  }
-
-  function makePrimary(index: number) {
-    setImages((current) => current.map((image, imageIndex) => imageIndex === index ? current[0] : imageIndex === 0 ? current[index] : image));
-  }
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const price = Number(form.price);
-    setBusy(true);
-    setError('');
-    try {
-      const category = categories.find((entry) => entry.id === form.categoryId);
-      const brand = brands.find((entry) => entry.id === form.brandId);
-      const uploadedImages = await uploadProductImages(images.flatMap((image) => image.file ? [image.file] : []));
-      let uploadedIndex = 0;
-      const savedImages = images.map((image) => image.file ? uploadedImages[uploadedIndex++] : { url: image.url, publicId: image.publicId });
-      const primaryImage = savedImages[0];
-      const sizePayload = sizes
-        .filter((size) => size.name.trim())
-        .map((size) => (Number.isFinite(Number(size.stock)) && size.stock !== undefined ? { name: size.name.trim(), stock: Number(size.stock) } : { name: size.name.trim() }));
-      const colorPayload = colors
-        .filter((color) => color.name.trim())
-        .map((color) => {
-          const match = savedImages.find((image) => image.url === color.imageUrl);
-          return {
-            name: color.name.trim(),
-            ...(color.hex ? { hex: color.hex } : {}),
-            ...(color.imageUrl ? { imageUrl: color.imageUrl, publicId: match?.publicId || '' } : {}),
-            ...(Number.isFinite(Number(color.stock)) && color.stock !== undefined ? { stock: Number(color.stock) } : {}),
-          };
-        });
-      await onSave({ name: form.name.trim(), sku: form.sku.trim().toUpperCase(), description: form.description.trim(), category: category?.name || form.category, categoryId: category?.id, brand: brand?.name || form.brand, brandId: brand?.id, price, stock: Number(form.stock), sizes: sizePayload, colors: colorPayload, images: savedImages, imageUrl: primaryImage?.url || '', imagePublicId: primaryImage?.publicId || '' }, product?.id);
-      onClose();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : getErrorMessage(reason)); }
-    finally { setBusy(false); }
-  }
-
-  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <section ref={dialogRef} tabIndex={-1} className="modal" role="dialog" aria-modal="true" aria-labelledby="product-modal-title">
-      <div className="modal-head"><div><span className="eyebrow">الكتالوج</span><h2 id="product-modal-title">{product ? 'تعديل المنتج' : 'إضافة منتج'}</h2></div><button className="icon-button" title="إغلاق" onClick={onClose}><X size={19} /></button></div>
-      <form onSubmit={submit}>
-        <div className="product-image-field">
-          <div className="product-image-gallery-preview">{images.map((image, index) => <div className={`product-image-item ${index === 0 ? 'product-image-primary' : ''}`} key={image.file ? `${image.file.name}-${image.url}` : `${image.publicId}-${index}`}><img src={image.url} alt={`${form.name || 'صورة المنتج'} ${index + 1}`} /><span className="product-image-index">{index === 0 ? 'رئيسية' : index + 1}</span><div className="product-image-item-actions"><button type="button" title="جعلها الصورة الرئيسية" disabled={index === 0} onClick={() => makePrimary(index)}><Check size={12} /></button><button type="button" title="إزالة الصورة" onClick={() => removeImage(index)}><X size={12} /></button></div></div>)}
-            {images.length < 8 && <label className="product-image-add"><ImagePlus size={21} /><span>إضافة صور</span><input className="sr-only" type="file" multiple accept="image/jpeg,image/png,image/webp,image/avif" onChange={(event) => { addImages(event.target.files); event.currentTarget.value = ''; }} /></label>}
-            {!images.length && <span className="product-image-hint">اختر حتى 8 صور للقطعة</span>}
-          </div>
-          <div className="product-image-help"><strong>صور المنتج</strong><small>أول صورة هي الرئيسية · JPG أو PNG أو WEBP أو AVIF · حتى 8MB للصورة</small></div>
-        </div>
-        <div className="form-grid">
-          <label className="span-two">اسم المنتج<input required maxLength={90} value={form.name} onChange={(event) => setField('name', event.target.value)} placeholder="مثال: هودي أوفرسايز" /></label>
-          <label>كود المنتج<input required maxLength={24} value={form.sku} onChange={(event) => setField('sku', event.target.value)} placeholder="R1-H-024" /></label>
-          <label>التصنيف<select required value={form.categoryId} onChange={(event) => setField('categoryId', event.target.value)}><option value="">اختر تصنيفاً</option>{categories.filter((entry) => entry.isActive || entry.id === form.categoryId).map((entry) => <option key={entry.id} value={entry.id}>{entry.name}{entry.isActive ? '' : ' · مؤرشف'}</option>)}</select>{!categories.some((entry) => entry.isActive) && <button className="field-action" type="button" onClick={() => onManage('categories')}>أضف تصنيفاً أولاً</button>}</label>
-          <label>العلامة التجارية<select required value={form.brandId} onChange={(event) => setField('brandId', event.target.value)}><option value="">اختر علامة تجارية</option>{brands.filter((entry) => entry.isActive || entry.id === form.brandId).map((entry) => <option key={entry.id} value={entry.id}>{entry.name}{entry.isActive ? '' : ' · مؤرشفة'}</option>)}</select>{!brands.some((entry) => entry.isActive) && <button className="field-action" type="button" onClick={() => onManage('brands')}>أضف علامة تجارية أولاً</button>}</label>
-          <label>السعر الأساسي بالجنيه<input type="number" required min="0" step="1" value={form.price} onChange={(event) => setField('price', event.target.value)} placeholder="850" /></label>
-          <label>الكمية في المخزون<input type="number" required min="0" step="1" value={form.stock} onChange={(event) => setField('stock', event.target.value)} placeholder="24" /></label>
-          <label className="span-two">وصف المنتج<textarea rows={4} maxLength={1200} value={form.description} onChange={(event) => setField('description', event.target.value)} placeholder="خامة القطعة، المقاسات المتاحة، تعليمات العناية، أو أي تفاصيل تساعد العميل." /></label>
-        </div>
-
-        <div className="variant-editor">
-          <div className="variant-editor-head">
-            <div><strong>المقاسات</strong><small>تظهر للعميل كاختيار إلزامي قبل الإضافة للشنطة</small></div>
-            <span className="variant-count">{sizes.length} مقاس</span>
-          </div>
-          <div className="variant-chips">
-            {sizes.map((size, index) => (
-              <span className="variant-chip" key={`${size.name}-${index}`}>
-                <input
-                  className="variant-chip-name"
-                  value={size.name}
-                  onChange={(event) => setSizes((current) => current.map((entry, position) => (position === index ? { ...entry, name: event.target.value } : entry)))}
-                />
-                <input
-                  className="variant-chip-stock"
-                  type="number"
-                  min="0"
-                  step="1"
-                  placeholder="الكمية"
-                  value={size.stock ?? ''}
-                  onChange={(event) => setSizes((current) => current.map((entry, position) => (position === index ? { ...entry, stock: event.target.value === '' ? undefined : Number(event.target.value) } : entry)))}
-                />
-                <button className="icon-button" type="button" title="حذف المقاس" onClick={() => setSizes((current) => current.filter((_, position) => position !== index))}><X size={14} /></button>
-              </span>
-            ))}
-            {!sizes.length ? <small className="variant-empty">مفيش مقاسات — سيب الخانة فاضية لو القطعة بمقاس واحد.</small> : null}
-          </div>
-          <div className="variant-presets">
-            <span>مقاسات جاهزة</span>
-            {[...alphaSizePresets, ...numericSizePresets].map((preset) => {
-              const added = sizes.some((size) => size.name.toLowerCase() === preset.toLowerCase());
-              return (
-                <button
-                  className={`preset-chip ${added ? 'preset-chip-added' : ''}`}
-                  key={preset}
-                  type="button"
-                  disabled={added}
-                  onClick={() => addSize(preset)}
-                  title={added ? `${preset} مضاف بالفعل` : `إضافة ${preset}`}
-                >
-                  {added ? <Check size={12} /> : <Plus size={12} />} {preset}
-                </button>
-              );
-            })}
-          </div>
-          <div className="variant-add">
-            <input value={sizeInput} onChange={(event) => setSizeInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addSize(sizeInput); } }} placeholder="أو اكتب مقاس مخصص: 3XL أو 38" maxLength={12} />
-            <button className="button button-quiet" type="button" onClick={() => addSize(sizeInput)}><Plus size={14} /> إضافة مقاس</button>
-          </div>
-        </div>
-
-        <div className="variant-editor">
-          <div className="variant-editor-head">
-            <div><strong>الألوان</strong><small>كل لون بياخد صورته — الصورة بتتغير في صفحة المنتج لما العميل يختار اللون</small></div>
-            <span className="variant-count">{colors.length} لون</span>
-          </div>
-          <ul className="color-editor-list">
-            {colors.map((color, index) => (
-              <li className="color-editor-row" key={`${color.name}-${index}`}>
-                <input type="color" value={color.hex || '#E46A29'} onChange={(event) => setColors((current) => current.map((entry, position) => (position === index ? { ...entry, hex: event.target.value } : entry)))} aria-label="لون العينات" />
-                <input value={color.name} placeholder="اسم اللون" maxLength={24} onChange={(event) => setColors((current) => current.map((entry, position) => (position === index ? { ...entry, name: event.target.value } : entry)))} />
-                <select value={color.imageUrl || ''} onChange={(event) => setColors((current) => current.map((entry, position) => (position === index ? { ...entry, imageUrl: event.target.value } : entry)))}>
-                  <option value="">بدون صورة خاصة</option>
-                  {images.map((image, imageIndex) => <option key={`${image.url}-${imageIndex}`} value={image.url}>صورة {imageIndex + 1}</option>)}
-                </select>
-                <button className="icon-button delete-action" type="button" title="حذف اللون" onClick={() => setColors((current) => current.filter((_, position) => position !== index))}><X size={14} /></button>
-              </li>
-            ))}
-            {!colors.length ? <small className="variant-empty">مفيش ألوان — أضف لون واختارله الصورة المناسبة من صور المنتج.</small> : null}
-          </ul>
-          <div className="color-editor-add">
-            <input type="color" value={colorDraft.hex} onChange={(event) => setColorDraft((current) => ({ ...current, hex: event.target.value }))} aria-label="اختيار اللون" />
-            <input value={colorDraft.name} onChange={(event) => setColorDraft((current) => ({ ...current, name: event.target.value }))} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addColor(); } }} placeholder="اسم اللون" maxLength={24} />
-            <select value={colorDraft.imageUrl} onChange={(event) => setColorDraft((current) => ({ ...current, imageUrl: event.target.value }))}>
-              <option value="">بدون صورة خاصة</option>
-              {images.map((image, index) => <option key={`${image.url}-${index}`} value={image.url}>صورة {index + 1}</option>)}
-            </select>
-            <button className="button button-quiet" type="button" onClick={addColor}><Plus size={14} /> إضافة لون</button>
-          </div>
-        </div>
-        {error && <p className="form-error" role="alert">{error}</p>}
-        <div className="modal-actions"><button className="button button-quiet" type="button" onClick={onClose}>إلغاء</button><button className="button button-dark" type="submit" disabled={busy}>{busy ? <><LoaderCircle className="spin-icon" size={15} /> جارٍ رفع الصورة والحفظ...</> : <><Check size={16} /> {product ? 'حفظ التعديلات' : 'إضافة المنتج'}</>}</button></div>
-      </form>
-    </section>
-  </div>;
-}
-
 function StatusBadge({ status }: { status: string }) {
   const style = status === 'مكتمل' ? 'complete' : status === 'ملغي' ? 'cancelled' : status === 'تم الشحن' ? 'shipped' : status === 'قيد التجهيز' ? 'processing' : 'new';
   return <span className={`status-badge status-${style}`}><i />{status || 'جديد'}</span>;
@@ -676,6 +407,7 @@ function ProductTable({
   onSelectAll,
   mode,
   stats,
+  highlighted,
 }: {
   products: Product[];
   onEdit: (product: Product) => void;
@@ -688,6 +420,7 @@ function ProductTable({
   onSelectAll: () => void;
   mode: Page;
   stats?: Record<string, { views?: number; carts?: number }>;
+  highlighted?: string | null;
 }) {
   const [draft, setDraft] = useState<Record<string, { price: string; stock: string }>>({});
   const [savingId, setSavingId] = useState('');
@@ -746,7 +479,7 @@ function ProductTable({
             const sizes = productSizes(product);
             const colors = productColors(product);
             return (
-              <tr key={product.id} className={selectedIds.includes(product.id) ? 'row-selected' : ''}>
+              <tr key={product.id} data-product-row={product.id} className={`${selectedIds.includes(product.id) ? 'row-selected' : ''} ${highlighted === product.id ? 'row-highlight' : ''}`}>
                 {mode === 'products' ? (
                   <td className="select-cell">
                     <input type="checkbox" aria-label={`تحديد ${product.name}`} checked={selectedIds.includes(product.id)} onChange={() => onToggleSelect(product.id)} />
@@ -876,9 +609,12 @@ function OrderTable({ orders, busyOrder, onStatusChange }: { orders: Order[]; bu
   return <><div className="table-scroll"><table><thead><tr><th>رقم الطلب</th><th>العميل</th><th>التاريخ</th><th>القطع</th><th>الإجمالي</th><th>الحالة</th><th><span className="sr-only">التفاصيل</span></th></tr></thead><tbody>{orders.map((order, index) => <tr key={order.id}><td><span className="order-id">#{order.id.slice(-6).toUpperCase()}</span></td><td><div className="customer-cell"><span className={`customer-avatar customer-${index % 5}`}>{initials(order.customerName || 'ع')}</span><span><strong>{order.customerName || 'عميل جديد'}</strong><small>{order.customerPhone || '—'}</small></span></div></td><td className="date-cell">{formatDate(order.createdAt?.seconds)}</td><td>{order.itemsCount ?? 0} قطع</td><td className="price-cell">{money.format(Number(order.total) || 0)}{order.shippingPending && <small className="order-shipping-note"> قبل الشحن</small>}</td><td><div className="status-control"><StatusBadge status={order.status || 'جديد'} /><select aria-label={`تغيير حالة الطلب ${order.id}`} value={order.status || 'جديد'} disabled={busyOrder === order.id} onChange={(event) => onStatusChange(order.id, event.target.value as OrderStatus)}>{statusOptions.map((status) => <option key={status} value={status}>{status}</option>)}</select><ChevronDown size={13} /></div></td><td><button className="icon-button" type="button" title="عرض تفاصيل الطلب" onClick={() => setSelectedOrder(order)}><Eye size={16} /></button></td></tr>)}</tbody></table></div>{selectedOrder && <OrderDetailsDialog order={selectedOrder} onClose={() => setSelectedOrder(null)} />}</>;
 }
 
+const ORDER_SOURCE_LABEL: Record<string, string> = { storefront: 'من الموقع', whatsapp: 'واتساب', 'quick-buy': 'شراء سريع' };
+
 function OrderDetailsDialog({ order, onClose }: { order: Order; onClose: () => void }) {
   const dialogRef = useModalAccessibility(onClose);
   const items = order.items || [];
+  const sourceLabel = ORDER_SOURCE_LABEL[order.source ?? 'storefront'];
   const subtotal = Number(order.subtotal) || items.reduce((sum, item) => sum + (Number(item.lineTotal) || (Number(item.unitPrice) || 0) * (Number(item.quantity) || 0)), 0);
 
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section ref={dialogRef} tabIndex={-1} className="modal order-details-modal" role="dialog" aria-modal="true" aria-labelledby="order-details-title">
@@ -909,6 +645,7 @@ function OverviewChart({ orders }: { orders: Order[] }) {
 }
 
 export default function DashboardPage() {
+  const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [authorized, setAuthorized] = useState(false);
@@ -943,7 +680,6 @@ export default function DashboardPage() {
   const [stockFilter, setStockFilter] = useState('all');
   const [orderStatusFilter, setOrderStatusFilter] = useState('all');
   const [offerStatusFilter, setOfferStatusFilter] = useState('all');
-  const [modalProduct, setModalProduct] = useState<Product | null | undefined>(undefined);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [workshopMenuOpen, setWorkshopMenuOpen] = useState(false);
   const [busyOrder, setBusyOrder] = useState('');
@@ -953,6 +689,7 @@ export default function DashboardPage() {
   const [shippingModal, setShippingModal] = useState<ShippingRate | null | undefined>(undefined);
   const [purchaseModal, setPurchaseModal] = useState(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const [highlightedProductId, setHighlightedProductId] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -969,6 +706,18 @@ export default function DashboardPage() {
       finally { if (mounted) setAuthReady(true); }
     });
     return () => { mounted = false; unsubscribe(); };
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const requested = params.get('page') as Page | null;
+    if (requested && requested in pageCopy) setPage(requested);
+    const highlight = params.get('highlight');
+    if (highlight) {
+      setHighlightedProductId(highlight);
+      window.setTimeout(() => setHighlightedProductId(null), 4000);
+      document.querySelector(`[data-product-row="${highlight}"]`)?.scrollIntoView({ block: 'center' });
+    }
   }, []);
 
   useEffect(() => {
@@ -1064,11 +813,6 @@ export default function DashboardPage() {
   const brandCount = brands.length;
   const categoryCount = categories.length;
 
-  async function saveProduct(value: Omit<Product, 'id'>, id?: string) {
-    if (id) await updateDoc(doc(db, 'products', id), { ...value, updatedAt: serverTimestamp() });
-    else await addDoc(collection(db, 'products'), { ...value, createdAt: serverTimestamp() });
-    setToast(id ? 'تم تحديث بيانات المنتج.' : 'تمت إضافة المنتج للكتالوج.');
-  }
   function offerHasConflict(value: Pick<Offer, 'productIds' | 'startsOn' | 'endsOn'>, id?: string) {
     const productSet = new Set(value.productIds);
     return offers.some((existing) => {
@@ -1320,7 +1064,7 @@ export default function DashboardPage() {
   if (!user) return <Login message={authNotice} />;
   if (!authorized) return <main className="access-denied"><div className="denied-mark">R/</div><span className="eyebrow">حساب غير مصرّح</span><h1>هذه المساحة للفريق فقط</h1><p>{authNotice || 'تم تسجيل الدخول، لكن هذا الحساب غير مضاف إلى قائمة مديري المتجر.'}</p><div className="admin-identity"><span>{user.email}</span><code dir="ltr">{user.uid}</code><button className="button button-quiet" onClick={async () => { try { await navigator.clipboard.writeText(user.uid); setUidCopied(true); } catch { setUidCopied(false); } }}><Copy size={15} /> {uidCopied ? 'تم نسخ UID' : 'نسخ UID'}</button></div><button className="button button-dark" onClick={exit}><LogOut size={16} /> تسجيل الخروج</button></main>;
 
-  const pageActions = page === 'products' ? <button className="button button-lime" onClick={() => setModalProduct(null)}><Plus size={17} /> منتج جديد</button> : page === 'offers' ? <button className="button button-lime" onClick={() => setOfferModal(null)}><Plus size={17} /> عرض جديد</button> : page === 'categories' || page === 'brands' ? <button className="button button-lime" onClick={() => setCatalogModal({ kind: page })}><Plus size={17} /> {page === 'categories' ? 'تصنيف جديد' : 'علامة جديدة'}</button> : page === 'suppliers' ? <button className="button button-lime" onClick={() => setSupplierModal(null)}><Plus size={17} /> مورد جديد</button> : page === 'shippingRates' ? <button className="button button-lime" onClick={() => setShippingModal(null)}><Plus size={17} /> منطقة جديدة</button> : page === 'overview' ? <button className="button button-dark" onClick={() => setPage('products')}><Plus size={17} /> إضافة منتج</button> : undefined;
+  const pageActions = page === 'products' ? <Link className="button button-lime" href="/products/new"><Plus size={17} /> منتج جديد</Link> : page === 'offers' ? <button className="button button-lime" onClick={() => setOfferModal(null)}><Plus size={17} /> عرض جديد</button> : page === 'categories' || page === 'brands' ? <button className="button button-lime" onClick={() => setCatalogModal({ kind: page })}><Plus size={17} /> {page === 'categories' ? 'تصنيف جديد' : 'علامة جديدة'}</button> : page === 'suppliers' ? <button className="button button-lime" onClick={() => setSupplierModal(null)}><Plus size={17} /> مورد جديد</button> : page === 'shippingRates' ? <button className="button button-lime" onClick={() => setShippingModal(null)}><Plus size={17} /> منطقة جديدة</button> : page === 'overview' ? <Link className="button button-dark" href="/products/new"><Plus size={17} /> إضافة منتج</Link> : undefined;
   const recentOrders = [...orders].sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)).slice(0, 5);
   const today = new Date().toISOString().slice(0, 10);
   const resolvedProducts = filteredProducts.map((product) => {
@@ -1398,7 +1142,7 @@ export default function DashboardPage() {
             <button className="button button-quiet" type="button" onClick={() => setSelectedProductIds([])}><X size={15} /> إلغاء التحديد</button>
           </section>
         ) : null}
-        {page === 'products' && <section className="panel data-panel"><div className="table-toolbar"><div className="toolbar-info"><span className="result-count">{filteredProducts.length} منتج</span><span className="muted">أسعار القطع الأساسية وأسعار العروض النشطة</span></div><div className="toolbar-controls"><SearchBox value={query} onChange={setQuery} label="البحث في المنتجات" placeholder="ابحث بالاسم أو الكود..." /><select className="filter-select" aria-label="تصفية حسب التصنيف" value={productCategoryFilter} onChange={(event) => setProductCategoryFilter(event.target.value)}><option value="all">كل التصنيفات</option>{categories.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select><select className="filter-select" aria-label="تصفية حسب العلامة التجارية" value={productBrandFilter} onChange={(event) => setProductBrandFilter(event.target.value)}><option value="all">كل العلامات</option>{brands.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select><select className="filter-select" aria-label="تصفية حسب المخزون" value={stockFilter} onChange={(event) => setStockFilter(event.target.value)}><option value="all">كل المخزون</option><option value="available">متوفر</option><option value="low">مخزون منخفض</option></select></div></div><ProductTable onNotify={setToast} onQuickSave={quickSaveProduct} onDuplicate={duplicateProduct} selectedIds={[]} onToggleSelect={() => undefined} onSelectAll={() => undefined} products={resolvedProducts} onEdit={setModalProduct} onDelete={deleteProduct} mode={page} /><div className="panel-footer"><span>عرض {filteredProducts.length} من {products.length} منتج</span><button className="clear-filters" type="button" onClick={() => { setQuery(''); setProductCategoryFilter('all'); setProductBrandFilter('all'); setStockFilter('all'); }}>مسح البحث والفلاتر</button><span>الأسعار بالجنيه المصري</span></div></section>}
+        {page === 'products' && <section className="panel data-panel"><div className="table-toolbar"><div className="toolbar-info"><span className="result-count">{filteredProducts.length} منتج</span><span className="muted">أسعار القطع الأساسية وأسعار العروض النشطة</span></div><div className="toolbar-controls"><SearchBox value={query} onChange={setQuery} label="البحث في المنتجات" placeholder="ابحث بالاسم أو الكود..." /><select className="filter-select" aria-label="تصفية حسب التصنيف" value={productCategoryFilter} onChange={(event) => setProductCategoryFilter(event.target.value)}><option value="all">كل التصنيفات</option>{categories.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select><select className="filter-select" aria-label="تصفية حسب العلامة التجارية" value={productBrandFilter} onChange={(event) => setProductBrandFilter(event.target.value)}><option value="all">كل العلامات</option>{brands.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select><select className="filter-select" aria-label="تصفية حسب المخزون" value={stockFilter} onChange={(event) => setStockFilter(event.target.value)}><option value="all">كل المخزون</option><option value="available">متوفر</option><option value="low">مخزون منخفض</option></select></div></div><ProductTable onNotify={setToast} onQuickSave={quickSaveProduct} onDuplicate={duplicateProduct} selectedIds={[]} onToggleSelect={() => undefined} onSelectAll={() => undefined} products={resolvedProducts} onEdit={(product) => router.push(`/products/${product.id}`)} onDelete={deleteProduct} mode={page} highlighted={highlightedProductId} /><div className="panel-footer"><span>عرض {filteredProducts.length} من {products.length} منتج</span><button className="clear-filters" type="button" onClick={() => { setQuery(''); setProductCategoryFilter('all'); setProductBrandFilter('all'); setStockFilter('all'); }}>مسح البحث والفلاتر</button><span>الأسعار بالجنيه المصري</span></div></section>}
         {page === 'offers' && <section className="panel data-panel"><div className="table-toolbar"><div className="toolbar-info"><span className="result-count">{filteredOffers.length} حملة</span><span className="muted">{offers.filter((offer) => getOfferState(offer) === 'نشط').length} نشطة الآن · الخصم يطبق على القطع المحددة فقط</span></div><div className="toolbar-controls"><SearchBox value={query} onChange={setQuery} label="البحث في العروض" placeholder="ابحث باسم الحملة..." /><select className="filter-select" aria-label="تصفية العروض حسب الحالة" value={offerStatusFilter} onChange={(event) => setOfferStatusFilter(event.target.value)}><option value="all">كل الحالات</option><option value="نشط">نشط الآن</option><option value="مجدول">مجدول</option><option value="منتهي">منتهي</option><option value="متوقف">متوقف</option></select></div></div><OfferTable offers={filteredOffers} products={products} query={query} onEdit={setOfferModal} onToggle={toggleOffer} onDelete={deleteOffer} /><div className="panel-footer"><span>لا تتداخل حملتان نشطتان على القطعة نفسها</span><button className="clear-filters" type="button" onClick={() => { setQuery(''); setOfferStatusFilter('all'); }}>مسح البحث والفلاتر</button><span>تحديث مباشر <i className="live-dot" /></span></div></section>}
         {page === 'orders' && <section className="panel data-panel"><div className="table-toolbar"><div className="toolbar-info"><span className="result-count">{filteredOrders.length} طلب</span><span className="muted">{pendingOrders} بحاجة إلى متابعة</span></div><div className="toolbar-controls"><SearchBox value={query} onChange={setQuery} label="البحث في الطلبات" placeholder="ابحث برقم الطلب أو العميل..." /><select className="filter-select" aria-label="تصفية الطلبات حسب الحالة" value={orderStatusFilter} onChange={(event) => setOrderStatusFilter(event.target.value)}><option value="all">كل الحالات</option>{statusOptions.map((status) => <option key={status} value={status}>{status}</option>)}</select></div></div><OrderTable orders={[...filteredOrders].sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0))} busyOrder={busyOrder} onStatusChange={setOrderStatus} /><div className="panel-footer"><span>تحديثات الحالة تحفظ مباشرة</span><button className="clear-filters" type="button" onClick={() => { setQuery(''); setOrderStatusFilter('all'); }}>مسح البحث والفلاتر</button><span><i className="live-dot" /> متصل بقاعدة البيانات</span></div></section>}
         {page === 'customers' && <section className="panel data-panel"><div className="table-toolbar"><div className="toolbar-info"><span className="result-count">{filteredCustomers.length} عميل</span><span className="muted">سجل العملاء</span></div><SearchBox value={query} onChange={setQuery} label="البحث في العملاء" placeholder="ابحث بالاسم أو رقم الهاتف..." /></div><CustomersTable customers={filteredCustomers} /><div className="panel-footer"><span>البيانات مرتبطة بسجل الطلبات</span><span>تحديث مباشر <i className="live-dot" /></span></div></section>}
@@ -1410,7 +1154,6 @@ export default function DashboardPage() {
         <footer className="page-footer"><span>R/ONE</span><span>تفاصيل معمولة علشان تعيش.</span><span>بياناتك محمية ومزامنة عبر Firebase</span></footer>
       </div>
     </main>
-    {modalProduct !== undefined && <ProductModal product={modalProduct || undefined} categories={categories} brands={brands} onClose={() => setModalProduct(undefined)} onManage={(kind) => { setModalProduct(undefined); setPage(kind); }} onSave={saveProduct} />}
     {catalogModal && <CatalogModal kind={catalogModal.kind} entry={catalogModal.entry} onClose={() => setCatalogModal(null)} onSave={(value, id) => saveCatalog(catalogModal.kind, value, id)} />}
     {offerModal !== undefined && <OfferModal offer={offerModal || undefined} products={products} onClose={() => setOfferModal(undefined)} onSave={saveOffer} />}
     {supplierModal !== undefined && <RecordModal title={supplierModal ? 'تعديل بيانات المورد' : 'إضافة مورد'} initial={supplierModal ? { name: supplierModal.name, contactName: supplierModal.contactName || '', phone: supplierModal.phone || '', email: supplierModal.email || '', address: supplierModal.address || '', notes: supplierModal.notes || '' } : undefined} fields={[{ key: 'name', label: 'اسم المورد', required: true, placeholder: 'اسم الشركة أو المورد' }, { key: 'contactName', label: 'مسؤول التواصل', placeholder: 'الاسم' }, { key: 'phone', label: 'رقم الهاتف', type: 'tel', placeholder: '+20' }, { key: 'email', label: 'البريد الإلكتروني', type: 'email', placeholder: 'supplier@example.com' }, { key: 'address', label: 'العنوان', placeholder: 'المدينة أو العنوان' }, { key: 'notes', label: 'ملاحظات', type: 'textarea', placeholder: 'تفاصيل التعامل أو مواعيد التوريد' }]} onClose={() => setSupplierModal(undefined)} onSave={(values) => saveSupplier(values, supplierModal?.id)} />}
